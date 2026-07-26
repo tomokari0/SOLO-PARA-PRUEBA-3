@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "outputDirectory": "dist",
+  "headers": [
+    {
+      "source": "/(index.html|sw.js)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache, no-store, must-revalidate"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index.ts"
+    },
+    {
+      "source": "/upload/(.*)",
+      "destination": "/api/index.ts"
+    },
+    {
+      "source": "/upload",
+      "destination": "/api/index.ts"
+    },
+    {
+      "source": "/((?!api/|upload/|assets/|.*\\.(?:js|css|png|jpg|jpeg|gif|svg|ico|json|vtt|mp4|webm)).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

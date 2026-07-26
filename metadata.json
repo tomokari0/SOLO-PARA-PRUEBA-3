@@ -1,0 +1,8 @@
+{
+  "name": "Remix: Seikotv",
+  "description": "Seikotv is a high-performance streaming platform for Gacha series, featuring offline downloads, custom caching, and optimized playback.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

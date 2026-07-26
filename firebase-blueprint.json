@@ -1,0 +1,182 @@
+{
+  "entities": {
+    "User": {
+      "title": "User Profile",
+      "description": "Main user profile document containing PII and global settings.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "User UID" },
+        "name": { "type": "string", "description": "Display name" },
+        "avatar": { "type": "string", "description": "Avatar URL" },
+        "role": { "type": "string", "enum": ["user", "admin"], "description": "User role" },
+        "email": { "type": "string", "format": "email", "description": "User email" },
+        "termsAccepted": { "type": "boolean", "description": "Whether the user accepted the Terms of Use" },
+        "termsAcceptedAt": { "type": "string", "format": "date-time", "description": "When the user accepted the Terms of Use" }
+      },
+      "required": ["id", "name", "avatar", "role", "email", "termsAccepted", "termsAcceptedAt"]
+    },
+    "Profile": {
+      "title": "Sub-Profile",
+      "description": "Individual profile within a user account (e.g., for different family members).",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Profile name" },
+        "avatar": { "type": "string", "description": "Profile avatar URL" },
+        "role": { "type": "string", "description": "Profile role" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["name", "avatar", "role"]
+    },
+    "Content": {
+      "title": "Streaming Content",
+      "description": "Movies or series available on the platform.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "backdropUrl": { "type": "string" },
+        "type": { "type": "string", "enum": ["movie", "series"] },
+        "releaseYear": { "type": "integer" },
+        "rating": { "type": "string" },
+        "genre": { "type": "array", "items": { "type": "string" } },
+        "status": { "type": "string", "enum": ["ongoing", "completed", "cancelled"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "titleLogoUrl": { "type": "string" }
+      }
+    },
+    "Episode": {
+      "title": "Series Episode",
+      "description": "Individual episode of a series.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "episodeNumber": { "type": "integer" },
+        "videoUrl": { "type": "string" },
+        "thumbnailUrl": { "type": "string" },
+        "duration": { "type": "string" },
+        "titleLogoUrl": { "type": "string" },
+        "audioTracks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": { "type": "string" },
+              "languageLabel": { "type": "string" },
+              "audioUrl": { "type": "string" }
+            },
+            "required": ["id", "languageLabel", "audioUrl"]
+          }
+        }
+      }
+    },
+    "CastMember": {
+      "title": "Cast and Crew Member",
+      "description": "A cast or crew member of a movie or series.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "role": { "type": "string" },
+        "character": { "type": "string" },
+        "avatar": { "type": "string" }
+      },
+      "required": ["name", "role"]
+    },
+    "Season": {
+      "title": "Series Season",
+      "description": "A season within a series.",
+      "type": "object",
+      "properties": {
+        "seasonNumber": { "type": "integer" },
+        "title": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["seasonNumber"]
+    },
+    "Postulacion": {
+      "title": "Community Content Proposal",
+      "description": "Content uploaded or suggested by the community pending approval.",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "type": "string", "enum": ["movie", "series"] },
+        "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["title", "type", "status", "createdAt"]
+    },
+    "Feedback": {
+      "title": "User Feedback",
+      "description": "Ratings and feedback provided by users.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "rating": { "type": "integer" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "date": { "type": "string" }
+      }
+    },
+    "Config": {
+      "title": "Application Configuration",
+      "description": "Global application configuration documents like Teapot settings.",
+      "type": "object",
+      "properties": {
+        "redirectDate": { "type": "string", "description": "YYYY-MM-DD date for teapot redirection" }
+      }
+    },
+    "ContentLike": {
+      "title": "Content Likes Counter",
+      "description": "Real-time likes counter and user IDs for movies, series, or episodes",
+      "type": "object",
+      "properties": {
+        "likesCount": { "type": "integer" },
+        "likedBy": { "type": "array", "items": { "type": "string" } },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["likesCount", "likedBy"]
+    }
+  },
+  "firestore": {
+    "/usuarios/{userId}": {
+      "schema": "User",
+      "description": "Private user data"
+    },
+    "/usuarios/{userId}/perfiles/{profileId}": {
+      "schema": "Profile",
+      "description": "User sub-profiles"
+    },
+    "/content/{contentId}": {
+      "schema": "Content",
+      "description": "Public catalog"
+    },
+    "/content/{contentId}/episodes/{episodeId}": {
+      "schema": "Episode",
+      "description": "Series episodes"
+    },
+    "/content/{contentId}/temporadas/{seasonId}": {
+      "schema": "Season",
+      "description": "Series seasons metadata"
+    },
+    "/content/{contentId}/cast/{castId}": {
+      "schema": "CastMember",
+      "description": "Cast and crew members of the film or series"
+    },
+    "/feedback/{feedbackId}": {
+      "schema": "Feedback",
+      "description": "User feedback submissions"
+    },
+    "/postulaciones/{postulacionId}": {
+      "schema": "Postulacion",
+      "description": "Community video suggestions and uploads"
+    },
+    "/config/{configId}": {
+      "schema": "Config",
+      "description": "Global config settings"
+    },
+    "/content_likes/{contentId}": {
+      "schema": "ContentLike",
+      "description": "Real-time likes counter for movies, series, or episodes"
+    }
+  }
+}

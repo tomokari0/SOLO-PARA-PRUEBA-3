@@ -1,0 +1,43 @@
+{
+  "name": "seikoyt",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx server.ts",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1093.0",
+    "@aws-sdk/s3-request-presigner": "^3.1093.0",
+    "@google/genai": "^1.28.0",
+    "@uploadcare/react-uploader": "^1.13.0",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "firebase": "^12.9.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "imagekit": "^6.0.0",
+    "imagekit-javascript": "^4.0.1",
+    "lucide-react": "^0.577.0",
+    "motion": "^12.38.0",
+    "multer": "^2.2.0",
+    "node-fetch": "^3.3.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.13.1",
+    "shaka-player": "^5.0.7",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/fluent-ffmpeg": "^2.1.28",
+    "@types/multer": "^2.2.0",
+    "@types/node": "^22.14.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.8.2",
+    "vite": "^6.2.0"
+  }
+}
