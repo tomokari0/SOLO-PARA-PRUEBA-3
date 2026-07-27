@@ -15,6 +15,9 @@ export interface Episode {
   introEnd?: number;
   skipIntro?: number;
   titleLogoUrl?: string;
+  seasonId?: string;
+  seasonNumber?: number;
+  episodeNumber?: number;
 }
 
 export interface Season {
@@ -81,16 +84,40 @@ export interface Comment {
   userInteraction?: 'like' | 'dislike';
 }
 
+export interface UserSocialLinks {
+  youtube?: string;
+  discord?: string;
+  twitter?: string;
+  instagram?: string;
+  tiktok?: string;
+}
+
+export interface UserPreferences {
+  audioLang?: string;
+  subtitlesLang?: string;
+}
+
 export interface UserProfile {
   id: string;
-  name: string;
-  avatar: string;
+  uid?: string;
+  username?: string;
+  displayName?: string;
+  name?: string;
+  avatar?: string;
+  photoURL?: string;
+  bannerURL?: string;
+  bio?: string;
   role: 'user' | 'admin';
   email?: string;
   isKid?: boolean;
+  accentColor?: string;
+  socialLinks?: UserSocialLinks;
+  preferences?: UserPreferences;
+  watchlist?: string[];
+  createdAt?: any;
+  termsAccepted?: boolean;
+  termsAcceptedAt?: any;
   streak?: number;
   lastLogin?: string; // ISO date string
   totalWatchTime?: number; // Total seconds watched
-  termsAccepted?: boolean;
-  termsAcceptedAt?: any; // ISO string or Firestore timestamp
 }

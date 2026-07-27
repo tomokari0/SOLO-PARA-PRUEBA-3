@@ -20,6 +20,7 @@ import AiAssistant from './src/components/AiAssistant';
 import { useMemoryCleanup } from './src/hooks/useMemoryCleanup';
 import { audioPreloadManager } from './src/lib/AudioPreloadManager';
 import ContentLikeButton from './src/components/ContentLikeButton';
+import { ContentDetailModal } from './src/components/ContentDetailModal';
 import { Subtitles, Sun } from 'lucide-react';
 
 declare global {
@@ -407,6 +408,7 @@ const FeedbackToast: React.FC<{
 // --- REPRODUCTOR DINÁMICO DE SERIES ---
 const VideoPlayer: React.FC<{ 
     item: Content; 
+    initialEpIndex?: number;
     onClose: () => void;
     autoSkipIntro: boolean;
     setAutoSkipIntro: (val: boolean) => void;
@@ -414,7 +416,7 @@ const VideoPlayer: React.FC<{
     downloadVideo: (url: string, metadata?: any) => void;
     downloading: Record<string, number>;
     removeDownload: (url: string) => void;
-}> = ({ item, onClose, autoSkipIntro, setAutoSkipIntro, downloadedUrls, downloadVideo, downloading, removeDownload }) => {
+}> = ({ item, initialEpIndex, onClose, autoSkipIntro, setAutoSkipIntro, downloadedUrls, downloadVideo, downloading, removeDownload }) => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const ytPlayerRef = useRef<any>(null);
     const ytContainerId = useMemo(() => `yt-player-${Math.random().toString(36).substr(2, 9)}`, []);
@@ -429,28 +431,32 @@ const VideoPlayer: React.FC<{
         if (episodes.length > 0 && initialIndexSetRef.current !== item.id) {
             initialIndexSetRef.current = item.id;
             
-            // Find the last watched episode
-            let bestIndex = 0;
-            let latestTime = 0;
-            let lastEpProgressRatio = 0;
-
-            episodes.forEach((ep, idx) => {
-                const progress = watchProgress[`${item.id}_${ep.id}`];
-                if (progress && progress.lastWatched > latestTime) {
-                    latestTime = progress.lastWatched;
-                    bestIndex = idx;
-                    lastEpProgressRatio = progress.currentTime / (progress.duration || 1);
-                }
-            });
-
-            // If the last watched episode is basically finished (>90%), advance to the next episode if available!
-            if (lastEpProgressRatio > 0.90 && bestIndex < episodes.length - 1) {
-                setCurrentEpIndex(bestIndex + 1);
+            if (typeof initialEpIndex === 'number' && initialEpIndex >= 0 && initialEpIndex < episodes.length) {
+                setCurrentEpIndex(initialEpIndex);
             } else {
-                setCurrentEpIndex(bestIndex);
+                // Find the last watched episode
+                let bestIndex = 0;
+                let latestTime = 0;
+                let lastEpProgressRatio = 0;
+
+                episodes.forEach((ep, idx) => {
+                    const progress = watchProgress[`${item.id}_${ep.id}`];
+                    if (progress && progress.lastWatched > latestTime) {
+                        latestTime = progress.lastWatched;
+                        bestIndex = idx;
+                        lastEpProgressRatio = progress.currentTime / (progress.duration || 1);
+                    }
+                });
+
+                // If the last watched episode is basically finished (>90%), advance to the next episode if available!
+                if (lastEpProgressRatio > 0.90 && bestIndex < episodes.length - 1) {
+                    setCurrentEpIndex(bestIndex + 1);
+                } else {
+                    setCurrentEpIndex(bestIndex);
+                }
             }
         }
-    }, [episodes, item.id, watchProgress]);
+    }, [episodes, item.id, watchProgress, initialEpIndex]);
     const [isMenuOpen, setIsMenuOpen] = useState(false);
     const [isAudioMenuOpen, setIsAudioMenuOpen] = useState(false);
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -1097,14 +1103,36 @@ const VideoPlayer: React.FC<{
                     } as Episode));
 
                     if (episodesData.length > 0) {
+                        episodesData.sort((a, b) => {
+                            const sA = a.seasonNumber || 1;
+                            const sB = b.seasonNumber || 1;
+                            if (sA !== sB) return sA - sB;
+                            return (a.episodeNumber || 0) - (b.episodeNumber || 0);
+                        });
                         setEpisodes(episodesData);
-                    } else if (item.seasons?.[0]?.episodes) {
-                        // Fallback a mock data si no hay en Firebase
-                        setEpisodes(item.seasons[0].episodes);
+                    } else if (item.seasons && item.seasons.length > 0) {
+                        // Fallback a mock data flatten across all seasons
+                        const allEp = item.seasons.flatMap((s, sIdx) => 
+                            (s.episodes || []).map((ep, epIdx) => ({
+                                ...ep,
+                                seasonNumber: ep.seasonNumber || s.seasonNumber || (sIdx + 1),
+                                episodeNumber: ep.episodeNumber || (epIdx + 1)
+                            }))
+                        );
+                        setEpisodes(allEp);
                     }
                 } catch (error) {
                     console.error("Error fetching episodes:", error);
-                    if (item.seasons?.[0]?.episodes) setEpisodes(item.seasons[0].episodes);
+                    if (item.seasons && item.seasons.length > 0) {
+                        const allEp = item.seasons.flatMap((s, sIdx) => 
+                            (s.episodes || []).map((ep, epIdx) => ({
+                                ...ep,
+                                seasonNumber: ep.seasonNumber || s.seasonNumber || (sIdx + 1),
+                                episodeNumber: ep.episodeNumber || (epIdx + 1)
+                            }))
+                        );
+                        setEpisodes(allEp);
+                    }
                 } finally {
                     setLoading(false);
                 }
@@ -2945,7 +2973,7 @@ const ContentCard: React.FC<{
 };
 
 // --- COMPONENTE PRINCIPAL ---
-type Page = 'home' | 'movies' | 'series' | 'downloads';
+type Page = 'home' | 'movies' | 'series' | 'genres' | 'downloads';
 type Filter = 'all' | 'recent' | 'popular' | 'following' | 'ongoing';
 
 const MainApp: React.FC = () => {
@@ -2955,6 +2983,9 @@ const MainApp: React.FC = () => {
     const { downloadedUrls, downloading, downloadVideo, removeDownload } = useOfflineDownloads();
 
     const [currentPage, setCurrentPage] = useState<Page>('home');
+    const [selectedGenre, setSelectedGenre] = useState<string>('all');
+    const [genreContentTypeFilter, setGenreContentTypeFilter] = useState<'all' | 'series' | 'movie'>('all');
+    const [genreSearchQuery, setGenreSearchQuery] = useState<string>('');
     const [teapotDate, setTeapotDate] = useState<string | null>(null);
 
     // Subscribe to Teapot config in Firestore
@@ -3001,6 +3032,69 @@ const MainApp: React.FC = () => {
     useMemoryCleanup(currentPage);
     const [activeFilter, setActiveFilter] = useState<Filter>('all');
     const [contentList, setContentList] = useState<Content[]>(MOCK_CONTENT);
+
+    const handleSelectGenre = useCallback((genre: string) => {
+        setSelectedGenre(genre);
+        setCurrentPage('genres');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }, []);
+
+    const availableGenresWithCount = useMemo(() => {
+        const counts: Record<string, { total: number; series: number; movies: number }> = {};
+        
+        contentList.forEach(item => {
+            if (Array.isArray(item.genre)) {
+                item.genre.forEach(rawGenre => {
+                    const g = rawGenre ? rawGenre.trim() : '';
+                    if (!g) return;
+                    if (!counts[g]) {
+                        counts[g] = { total: 0, series: 0, movies: 0 };
+                    }
+                    counts[g].total += 1;
+                    if (item.type === 'series') counts[g].series += 1;
+                    if (item.type === 'movie') counts[g].movies += 1;
+                });
+            }
+        });
+
+        const sortedGenres = Object.keys(counts).sort((a, b) => {
+            if (counts[b].total !== counts[a].total) {
+                return counts[b].total - counts[a].total;
+            }
+            return a.localeCompare(b);
+        });
+
+        return sortedGenres.map(genreName => ({
+            name: genreName,
+            counts: counts[genreName]
+        }));
+    }, [contentList]);
+
+    const filteredGenresList = useMemo(() => {
+        if (!genreSearchQuery.trim()) return availableGenresWithCount;
+        const q = genreSearchQuery.toLowerCase().trim();
+        return availableGenresWithCount.filter(g => g.name.toLowerCase().includes(q));
+    }, [availableGenresWithCount, genreSearchQuery]);
+
+    const getGenreIcon = (genreName: string) => {
+        const lower = genreName.toLowerCase();
+        if (lower.includes('sci-fi') || lower.includes('ciencia')) return '🚀';
+        if (lower.includes('drama')) return '🎭';
+        if (lower.includes('action') || lower.includes('acción')) return '💥';
+        if (lower.includes('horror') || lower.includes('terror')) return '👻';
+        if (lower.includes('comedy') || lower.includes('comedia')) return '😂';
+        if (lower.includes('romance') || lower.includes('amor')) return '💖';
+        if (lower.includes('adventure') || lower.includes('aventura')) return '🧭';
+        if (lower.includes('fantasy') || lower.includes('fantasía')) return '🧙';
+        if (lower.includes('mystery') || lower.includes('misterio')) return '🔍';
+        if (lower.includes('crime') || lower.includes('crimen')) return '🕵️';
+        if (lower.includes('history') || lower.includes('historia')) return '📜';
+        if (lower.includes('family') || lower.includes('familia')) return '👨‍👩‍👧';
+        if (lower.includes('music') || lower.includes('música')) return '🎵';
+        if (lower.includes('thriller') || lower.includes('suspenso')) return '⚡';
+        if (lower.includes('youtube')) return '▶️';
+        return '🎬';
+    };
 
     const continueWatchingList = useMemo(() => {
         const itemsWithProgress: Array<{ item: Content; lastWatched: number }> = [];
@@ -3089,7 +3183,19 @@ const MainApp: React.FC = () => {
         }
         return undefined;
     }, [watchProgress]);
+    const [selectedContentForModal, setSelectedContentForModal] = useState<Content | null>(null);
     const [selectedVideo, setSelectedVideo] = useState<Content | null>(null);
+    const [selectedVideoEpIndex, setSelectedVideoEpIndex] = useState<number>(0);
+
+    const handleOpenContentDetail = useCallback((item: Content) => {
+        setSelectedContentForModal(item);
+    }, []);
+
+    const handlePlayFromModal = useCallback((item: Content, episodeIndex: number = 0) => {
+        setSelectedContentForModal(null);
+        setSelectedVideoEpIndex(episodeIndex);
+        setSelectedVideo(item);
+    }, []);
     const [isAdminOpen, setIsAdminOpen] = useState(false);
     const [isUploadFormOpen, setIsUploadFormOpen] = useState(false);
     const [isProfileEditOpen, setIsProfileEditOpen] = useState(false);
@@ -3387,6 +3493,16 @@ const MainApp: React.FC = () => {
         // Page filtering
         if (currentPage === 'movies') list = list.filter(item => item.type === 'movie');
         if (currentPage === 'series') list = list.filter(item => item.type === 'series');
+        if (currentPage === 'genres') {
+            if (genreContentTypeFilter === 'series') list = list.filter(item => item.type === 'series');
+            if (genreContentTypeFilter === 'movie') list = list.filter(item => item.type === 'movie');
+
+            if (selectedGenre && selectedGenre !== 'all') {
+                list = list.filter(item => 
+                    Array.isArray(item.genre) && item.genre.some(g => g.toLowerCase() === selectedGenre.toLowerCase())
+                );
+            }
+        }
 
         // Tag filtering
         if (activeFilter === 'recent') {
@@ -3404,7 +3520,7 @@ const MainApp: React.FC = () => {
         }
 
         return list;
-    }, [contentList, currentPage, activeFilter, watchProgress]);
+    }, [contentList, currentPage, activeFilter, watchProgress, selectedGenre, genreContentTypeFilter]);
 
     if (loading) {
         return (
@@ -3443,13 +3559,13 @@ const MainApp: React.FC = () => {
                         SEIKOTV
                     </h1>
                     <nav className="hidden md:flex gap-6 lg:gap-8">
-                        {['home', 'movies', 'series', 'downloads'].map(p => (
+                        {['home', 'movies', 'series', 'genres', 'downloads'].map(p => (
                             <button 
                                 key={p} 
                                 onClick={() => { setCurrentPage(p as Page); setSearchResults([]); }} 
                                 className={`text-[11px] lg:text-[12px] font-bold uppercase tracking-[0.2em] lg:tracking-[0.3em] transition-all hover:text-red-500 ${currentPage === p && searchResults.length === 0 ? 'text-red-500 border-b-2 border-red-500' : 'text-gray-400'}`}
                             >
-                                {p === 'home' ? 'Inicio' : p === 'movies' ? 'Películas' : p === 'series' ? 'Series' : 'Descargas'}
+                                {p === 'home' ? 'Inicio' : p === 'movies' ? 'Películas' : p === 'series' ? 'Series' : p === 'genres' ? 'Géneros' : 'Descargas'}
                             </button>
                         ))}
                     </nav>
@@ -3674,13 +3790,13 @@ const MainApp: React.FC = () => {
             {/* Mobile Menu Overlay */}
             <div className={`fixed inset-0 bg-black/95 z-[60] transition-all duration-500 md:hidden ${isMobileMenuOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}>
                 <div className="flex flex-col items-center justify-center h-full gap-8">
-                    {['home', 'movies', 'series', 'downloads'].map(p => (
+                    {['home', 'movies', 'series', 'genres', 'downloads'].map(p => (
                         <button 
                             key={p} 
                             onClick={() => { setCurrentPage(p as Page); setIsMobileMenuOpen(false); setSearchResults([]); }} 
                             className={`text-4xl font-bebas tracking-[0.2em] transition-all ${currentPage === p ? 'text-red-500' : 'text-gray-400'}`}
                         >
-                            {p === 'home' ? 'Inicio' : p === 'movies' ? 'Películas' : p === 'series' ? 'Series' : 'Descargas'}
+                            {p === 'home' ? 'Inicio' : p === 'movies' ? 'Películas' : p === 'series' ? 'Series' : p === 'genres' ? 'Géneros' : 'Descargas'}
                         </button>
                     ))}
                     <button 
@@ -3703,10 +3819,10 @@ const MainApp: React.FC = () => {
                             <h2 className="text-4xl md:text-9xl font-bebas text-white drop-shadow-2xl leading-none">{featured.title}</h2>
                             <p className="text-sm md:text-xl text-gray-300 line-clamp-2 md:line-clamp-3 leading-relaxed drop-shadow-lg font-medium">{featured.description}</p>
                             <div className="flex flex-col sm:flex-row gap-3 md:gap-4 pt-2 md:pt-4">
-                                <button onClick={() => setSelectedVideo(featured)} className="bg-white text-black px-6 md:px-12 py-3 md:py-5 rounded-lg md:rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-red-600 hover:text-white transition-all transform active:scale-95 shadow-2xl text-sm md:text-lg uppercase tracking-widest">
+                                <button onClick={() => handleOpenContentDetail(featured)} className="bg-white text-black px-6 md:px-12 py-3 md:py-5 rounded-lg md:rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-red-600 hover:text-white transition-all transform active:scale-95 shadow-2xl text-sm md:text-lg uppercase tracking-widest">
                                     <PlayIcon className="w-5 h-5 md:w-7 md:h-7" /> {t('play')}
                                 </button>
-                                <button className="bg-gray-500/30 backdrop-blur-md text-white px-6 md:px-12 py-3 md:py-5 rounded-lg md:rounded-xl font-bold hover:bg-gray-500/50 transition-all text-sm md:text-lg uppercase tracking-widest border border-white/10">
+                                <button onClick={() => handleOpenContentDetail(featured)} className="bg-gray-500/30 backdrop-blur-md text-white px-6 md:px-12 py-3 md:py-5 rounded-lg md:rounded-xl font-bold hover:bg-gray-500/50 transition-all text-sm md:text-lg uppercase tracking-widest border border-white/10">
                                     MÁS INFO
                                 </button>
                                 <ContentLikeButton contentId={featured.id} title={featured.title} variant="header" />
@@ -3839,7 +3955,7 @@ const MainApp: React.FC = () => {
                                     <ContentCard 
                                         key={`${item.id || 'search'}-${idx}`} 
                                         item={item} 
-                                        onPlay={() => setSelectedVideo(item)} 
+                                        onPlay={() => handleOpenContentDetail(item)} 
                                     />
                                 ))}
                             </div>
@@ -3856,7 +3972,7 @@ const MainApp: React.FC = () => {
                                     <ContentCard 
                                         key={`continue-${item.id}-${idx}`} 
                                         item={item} 
-                                        onPlay={() => setSelectedVideo(item)} 
+                                        onPlay={() => handleOpenContentDetail(item)} 
                                         progress={getLatestProgress(item)} 
                                     />
                                 ))}
@@ -3864,9 +3980,126 @@ const MainApp: React.FC = () => {
                         </div>
                     )}
 
+                    {/* Generos Page View */}
+                    {searchResults.length === 0 && currentPage === 'genres' && (
+                        <div className="mb-12 animate-fade-in space-y-8">
+                            <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-red-950/50 via-black to-stone-900/70 border border-red-600/30 p-6 md:p-10 shadow-[0_10px_35px_rgba(239,68,68,0.15)]">
+                                <div className="relative z-10 max-w-3xl space-y-3">
+                                    <div className="inline-flex items-center gap-2 bg-red-600/20 border border-red-600/40 text-red-500 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest">
+                                        <span>🎬</span> Explorador por Temáticas
+                                    </div>
+                                    <h2 className="text-3xl md:text-6xl font-bebas text-white tracking-[0.15em] uppercase">
+                                        Descubre por Géneros y Temáticas
+                                    </h2>
+                                    <p className="text-gray-300 text-xs md:text-sm leading-relaxed max-w-2xl font-medium">
+                                        Explora el catálogo completo filtrado por tus géneros favoritos: ciencia ficción, acción, romance, suspenso, comedia, misterio y más.
+                                    </p>
+                                </div>
+                                <div className="absolute top-0 right-0 w-96 h-96 bg-red-600/10 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20" />
+                            </div>
+
+                            {/* Tipo y Búsqueda de Género */}
+                            <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4 bg-white/5 border border-white/10 p-4 rounded-2xl">
+                                <div className="flex items-center gap-2 overflow-x-auto pb-1 lg:pb-0 scrollbar-hide">
+                                    <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mr-2 hidden sm:inline">
+                                        Filtrar por:
+                                    </span>
+                                    {[
+                                        { id: 'all', label: 'Todos los Contenidos' },
+                                        { id: 'series', label: 'Solo Series' },
+                                        { id: 'movie', label: 'Solo Películas' }
+                                    ].map(tab => (
+                                        <button
+                                            key={tab.id}
+                                            onClick={() => setGenreContentTypeFilter(tab.id as any)}
+                                            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all whitespace-nowrap ${genreContentTypeFilter === tab.id ? 'bg-red-600 text-white shadow-[0_0_12px_rgba(239,68,68,0.4)]' : 'bg-white/5 text-gray-400 hover:text-white hover:bg-white/10'}`}
+                                        >
+                                            {tab.label}
+                                        </button>
+                                    ))}
+                                </div>
+
+                                <div className="relative max-w-xs w-full">
+                                    <input
+                                        type="text"
+                                        value={genreSearchQuery}
+                                        onChange={(e) => setGenreSearchQuery(e.target.value)}
+                                        placeholder="Buscar género o tema..."
+                                        className="w-full bg-black/60 border border-white/10 focus:border-red-600 px-4 py-2 pl-9 rounded-xl text-xs text-white placeholder-gray-500 outline-none transition-all"
+                                    />
+                                    <svg className="w-4 h-4 text-gray-500 absolute left-3 top-1/2 -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                                    </svg>
+                                    {genreSearchQuery && (
+                                        <button 
+                                            onClick={() => setGenreSearchQuery('')}
+                                            className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs font-bold"
+                                        >
+                                            ✕
+                                        </button>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Tarjetas / Fichas de Géneros */}
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-[11px] font-black uppercase tracking-widest text-gray-400">
+                                        Selecciona una Temática ({filteredGenresList.length})
+                                    </span>
+                                    {selectedGenre !== 'all' && (
+                                        <button
+                                            onClick={() => setSelectedGenre('all')}
+                                            className="text-xs font-bold text-red-500 hover:text-red-400 uppercase tracking-wider flex items-center gap-1"
+                                        >
+                                            Ver Todos ↺
+                                        </button>
+                                    )}
+                                </div>
+
+                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
+                                    <button
+                                        onClick={() => setSelectedGenre('all')}
+                                        className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all duration-300 ${selectedGenre === 'all' ? 'bg-red-600 border-red-500 text-white shadow-[0_0_20px_rgba(239,68,68,0.5)] scale-[1.02]' : 'bg-white/5 border-white/10 text-gray-300 hover:border-red-600/50 hover:bg-white/10 hover:text-white'}`}
+                                    >
+                                        <div className="flex items-center gap-2.5 min-w-0">
+                                            <span className="text-xl">🌟</span>
+                                            <span className="font-bold text-xs truncate">Todos</span>
+                                        </div>
+                                        <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${selectedGenre === 'all' ? 'bg-white/20 text-white' : 'bg-white/10 text-gray-400'}`}>
+                                            {contentList.length}
+                                        </span>
+                                    </button>
+
+                                    {filteredGenresList.map(({ name, counts }) => {
+                                        const isSelected = selectedGenre.toLowerCase() === name.toLowerCase();
+                                        const icon = getGenreIcon(name);
+                                        const countToShow = genreContentTypeFilter === 'series' ? counts.series : genreContentTypeFilter === 'movie' ? counts.movies : counts.total;
+
+                                        return (
+                                            <button
+                                                key={name}
+                                                onClick={() => setSelectedGenre(isSelected ? 'all' : name)}
+                                                className={`flex items-center justify-between p-3.5 rounded-2xl border transition-all duration-300 ${isSelected ? 'bg-red-600 border-red-500 text-white shadow-[0_0_20px_rgba(239,68,68,0.5)] scale-[1.02]' : 'bg-white/5 border-white/10 text-gray-300 hover:border-red-600/50 hover:bg-white/10 hover:text-white'}`}
+                                            >
+                                                <div className="flex items-center gap-2.5 min-w-0">
+                                                    <span className="text-xl">{icon}</span>
+                                                    <span className="font-bold text-xs truncate">{name}</span>
+                                                </div>
+                                                <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-full ${isSelected ? 'bg-white/20 text-white' : 'bg-white/10 text-gray-400'}`}>
+                                                    {countToShow}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 md:gap-6 mb-8 md:mb-12">
                         <h3 className="text-2xl md:text-4xl font-bebas text-white tracking-[0.2em] uppercase border-l-4 md:border-l-8 border-red-600 pl-4 md:pl-6">
-                            {currentPage === 'movies' ? 'Todas las Películas' : currentPage === 'series' ? 'Series SeikoTV' : 'Nuestras Recomendaciones'}
+                            {currentPage === 'movies' ? 'Todas las Películas' : currentPage === 'series' ? 'Series SeikoTV' : currentPage === 'genres' ? (selectedGenre !== 'all' ? `Género: ${selectedGenre.toUpperCase()}` : 'Catálogo por Géneros') : 'Nuestras Recomendaciones'}
                         </h3>
                         
                         {/* Filtros Rápidos */}
@@ -3889,39 +4122,71 @@ const MainApp: React.FC = () => {
                         </div>
                     </div>
 
-                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7 gap-8">
-                        {filteredContent.map((item, idx) => {
-                            // Si es serie, mostramos el progreso del primer capítulo como referencia general
-                            const progressKey = item.type === 'movie' ? item.id : `${item.id}_${item.seasons?.[0]?.episodes?.[0]?.id || ''}`;
-                            const progress = watchProgress[progressKey];
-                            
-                            return (
-                                <ContentCard 
-                                    key={`${item.id}-${idx}`} 
-                                    item={item} 
-                                    onPlay={() => setSelectedVideo(item)} 
-                                    progress={progress && progress.duration > 0 ? (progress.currentTime / progress.duration) * 100 : undefined} 
-                                />
-                            );
-                        })}
-                    </div>
+                    {filteredContent.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-20 text-center bg-white/5 border border-white/10 rounded-3xl p-8 my-8 animate-fade-in">
+                            <span className="text-5xl mb-4">🔍</span>
+                            <h4 className="text-2xl font-bebas text-white tracking-widest uppercase">
+                                No hay contenidos disponibles
+                            </h4>
+                            <p className="text-gray-400 text-sm mt-2 max-w-md">
+                                No se encontraron resultados para el género <strong className="text-white">"{selectedGenre}"</strong>
+                                {genreContentTypeFilter !== 'all' ? ` (${genreContentTypeFilter === 'series' ? 'series' : 'películas'})` : ''}.
+                            </p>
+                            <button
+                                onClick={() => { setSelectedGenre('all'); setGenreContentTypeFilter('all'); }}
+                                className="mt-6 bg-red-600 text-white px-6 py-2.5 rounded-full font-bold uppercase tracking-widest text-xs hover:bg-red-700 transition-all shadow-[0_0_15px_rgba(239,68,68,0.4)]"
+                            >
+                                Ver Todos los Géneros
+                            </button>
+                        </div>
+                    ) : (
+                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-7 gap-8">
+                            {filteredContent.map((item, idx) => {
+                                // Si es serie, mostramos el progreso del primer capítulo como referencia general
+                                const progressKey = item.type === 'movie' ? item.id : `${item.id}_${item.seasons?.[0]?.episodes?.[0]?.id || ''}`;
+                                const progress = watchProgress[progressKey];
+                                
+                                return (
+                                    <ContentCard 
+                                        key={`${item.id}-${idx}`} 
+                                        item={item} 
+                                        onPlay={() => handleOpenContentDetail(item)} 
+                                        progress={progress && progress.duration > 0 ? (progress.currentTime / progress.duration) * 100 : undefined} 
+                                    />
+                                );
+                            })}
+                        </div>
+                    )}
                         </>
                     )}
                 </div>
             </main>
 
             <Footer onNavigate={(tab) => {
-                const validPages: Page[] = ['home', 'movies', 'series', 'downloads'];
+                const validPages: Page[] = ['home', 'movies', 'series', 'genres', 'downloads'];
                 if (validPages.includes(tab as any)) {
                     setCurrentPage(tab as any);
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                 }
             }} />
 
+            {selectedContentForModal && (
+                <ContentDetailModal
+                    item={selectedContentForModal}
+                    onClose={() => setSelectedContentForModal(null)}
+                    onPlayEpisode={(item, epIndex) => handlePlayFromModal(item, epIndex)}
+                    downloadedUrls={downloadedUrls}
+                    downloadVideo={downloadVideo}
+                    downloading={downloading}
+                    removeDownload={removeDownload}
+                />
+            )}
+
             {selectedVideo && (
                 <VideoPlayer 
                     item={selectedVideo} 
-                    onClose={() => setSelectedVideo(null)} 
+                    initialEpIndex={selectedVideoEpIndex}
+                    onClose={() => { setSelectedVideo(null); setSelectedVideoEpIndex(0); }} 
                     autoSkipIntro={autoSkipIntro}
                     setAutoSkipIntro={setAutoSkipIntro}
                     downloadedUrls={downloadedUrls}
@@ -3932,7 +4197,13 @@ const MainApp: React.FC = () => {
             )}
             {isAdminOpen && <AdminPanel onClose={() => setIsAdminOpen(false)} />}
             {isUploadFormOpen && <ContentUploadForm onClose={() => setIsUploadFormOpen(false)} />}
-            {isProfileEditOpen && <ProfileEdit activeProfile={activeProfile} onClose={() => setIsProfileEditOpen(false)} />}
+            {isProfileEditOpen && (
+                <ProfileEdit 
+                    activeProfile={activeProfile} 
+                    onClose={() => setIsProfileEditOpen(false)} 
+                    onProfileUpdate={(updated) => setActiveProfile(updated)}
+                />
+            )}
             {showFeedback && currentProfile && <FeedbackToast userId={currentProfile.id} onClose={() => setShowFeedback(false)} />}
             <AiAssistant />
 

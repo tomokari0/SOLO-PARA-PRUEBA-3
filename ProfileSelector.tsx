@@ -5,6 +5,7 @@ import { collection, onSnapshot, addDoc, serverTimestamp, query, orderBy } from 
 import { useAuth } from './AuthContext';
 import { UserProfile } from './types';
 import { handleFirestoreError, OperationType } from './src/lib/firestoreErrorHandler';
+import AvatarUpload from './src/components/AvatarUpload';
 
 interface ProfileSelectorProps {
     onProfileSelect: (profile: UserProfile) => void;
@@ -15,6 +16,7 @@ const ProfileSelector: React.FC<ProfileSelectorProps> = ({ onProfileSelect }) =>
     const [profiles, setProfiles] = useState<UserProfile[]>([]);
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [newProfileName, setNewProfileName] = useState('');
+    const [customAvatar, setCustomAvatar] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
 
     const AVATARS = [
@@ -47,15 +49,16 @@ const ProfileSelector: React.FC<ProfileSelectorProps> = ({ onProfileSelect }) =>
         if (!user || !newProfileName.trim()) return;
 
         try {
-            const randomAvatar = AVATARS[Math.floor(Math.random() * AVATARS.length)];
+            const avatarUrl = customAvatar || AVATARS[Math.floor(Math.random() * AVATARS.length)];
             const profilesRef = collection(db, "usuarios", user.uid, "perfiles");
             await addDoc(profilesRef, {
                 name: newProfileName,
-                avatar: randomAvatar,
+                avatar: avatarUrl,
                 role: 'user',
                 createdAt: serverTimestamp()
             });
             setNewProfileName('');
+            setCustomAvatar(null);
             setIsModalOpen(false);
         } catch (error) {
             handleFirestoreError(error, OperationType.CREATE, `usuarios/${user.uid}/perfiles`);
@@ -71,7 +74,7 @@ const ProfileSelector: React.FC<ProfileSelectorProps> = ({ onProfileSelect }) =>
     }
 
     return (
-        <div className="fixed inset-0 bg-black z-[500] flex flex-col items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black z-[500] flex flex-col items-center justify-center p-4 overflow-y-auto">
             <h1 className="text-3xl md:text-5xl font-bebas text-white mb-12 tracking-widest animate-fade-in">¿Quién está viendo ahora?</h1>
             
             <div className="flex flex-wrap justify-center gap-6 md:gap-10 max-w-5xl animate-fade-in-up">
@@ -105,8 +108,22 @@ const ProfileSelector: React.FC<ProfileSelectorProps> = ({ onProfileSelect }) =>
             {/* Modal */}
             {isModalOpen && (
                 <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[600] flex items-center justify-center p-4">
-                    <div className="bg-[#141414] border border-white/10 rounded-2xl p-8 w-full max-w-md animate-scale-in">
-                        <h2 className="text-2xl font-bold text-white mb-6">Añadir perfil</h2>
+                    <div className="bg-[#141414] border border-white/10 rounded-2xl p-6 md:p-8 w-full max-w-md animate-scale-in max-h-[90vh] overflow-y-auto">
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-2xl font-bold text-white">Añadir perfil</h2>
+                            <button onClick={() => setIsModalOpen(false)} className="text-gray-400 hover:text-white">
+                                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
+
+                        <div className="mb-6 flex flex-col items-center">
+                            <AvatarUpload
+                                currentAvatar={customAvatar || undefined}
+                                onUploadSuccess={(url) => setCustomAvatar(url)}
+                            />
+                            <p className="text-[10px] text-gray-500 mt-2 uppercase font-bold tracking-wider">Cargar Foto de Perfil (Cloudflare R2)</p>
+                        </div>
+
                         <form onSubmit={handleAddProfile} className="space-y-6">
                             <div>
                                 <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-2">Nombre del perfil</label>
@@ -117,9 +134,10 @@ const ProfileSelector: React.FC<ProfileSelectorProps> = ({ onProfileSelect }) =>
                                     onChange={(e) => setNewProfileName(e.target.value)}
                                     placeholder="Ej. Seiko"
                                     className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-white focus:border-red-600 outline-none transition-all"
+                                    required
                                 />
                             </div>
-                            <div className="flex gap-4 pt-4">
+                            <div className="flex gap-4 pt-2">
                                 <button 
                                     type="submit"
                                     className="flex-grow bg-white text-black font-bold py-3 rounded-lg hover:bg-red-600 hover:text-white transition-all"
@@ -128,7 +146,7 @@ const ProfileSelector: React.FC<ProfileSelectorProps> = ({ onProfileSelect }) =>
                                 </button>
                                 <button 
                                     type="button"
-                                    onClick={() => setIsModalOpen(false)}
+                                    onClick={() => { setIsModalOpen(false); setCustomAvatar(null); }}
                                     className="flex-grow bg-white/5 text-white font-bold py-3 rounded-lg hover:bg-white/10 transition-all"
                                 >
                                     Cancelar

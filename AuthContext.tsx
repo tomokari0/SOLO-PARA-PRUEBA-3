@@ -89,12 +89,36 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (docSnap.exists()) {
                 await setDoc(profileRef, termsData, { merge: true });
             } else {
+                const defaultUsername = user.email ? user.email.split('@')[0] : 'usuario';
+                const defaultDisplay = user.displayName || defaultUsername;
+                const defaultAvatar = user.photoURL || 'https://upload.wikimedia.org/wikipedia/commons/0/0b/Netflix-avatar.png';
+
                 const newProfile = {
                     id: user.uid,
-                    name: user.displayName || 'Usuario',
-                    avatar: user.photoURL || 'https://upload.wikimedia.org/wikipedia/commons/0/0b/Netflix-avatar.png',
+                    uid: user.uid,
+                    username: defaultUsername,
+                    displayName: defaultDisplay,
+                    name: defaultDisplay,
+                    avatar: defaultAvatar,
+                    photoURL: defaultAvatar,
+                    bannerURL: '',
+                    bio: '',
+                    accentColor: '#ef4444',
                     role: isAdminUser ? 'admin' : 'user',
                     email: user.email || '',
+                    socialLinks: {
+                        youtube: '',
+                        discord: '',
+                        twitter: '',
+                        instagram: '',
+                        tiktok: ''
+                    },
+                    preferences: {
+                        audioLang: 'es-LAT',
+                        subtitlesLang: 'es'
+                    },
+                    watchlist: [],
+                    createdAt: serverTimestamp(),
                     ...termsData
                 };
                 await setDoc(profileRef, newProfile);

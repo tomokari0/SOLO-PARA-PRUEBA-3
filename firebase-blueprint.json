@@ -2,18 +2,48 @@
   "entities": {
     "User": {
       "title": "User Profile",
-      "description": "Main user profile document containing PII and global settings.",
+      "description": "Main user profile document containing PII, customization and preferences.",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "User UID" },
-        "name": { "type": "string", "description": "Display name" },
+        "uid": { "type": "string", "description": "User UID" },
+        "username": { "type": "string", "description": "Unique username or public handle" },
+        "displayName": { "type": "string", "description": "Display name visible in comments and posts" },
+        "name": { "type": "string", "description": "Legacy display name fallback" },
         "avatar": { "type": "string", "description": "Avatar URL" },
+        "photoURL": { "type": "string", "description": "Profile picture URL (R2 or default)" },
+        "bannerURL": { "type": "string", "description": "Header background banner image URL" },
+        "bio": { "type": "string", "maxLength": 250, "description": "Short bio description (max 250 chars)" },
         "role": { "type": "string", "enum": ["user", "admin"], "description": "User role" },
         "email": { "type": "string", "format": "email", "description": "User email" },
+        "accentColor": { "type": "string", "description": "Accent color or neon glow (#ff0000, etc.)" },
+        "socialLinks": {
+          "type": "object",
+          "properties": {
+            "youtube": { "type": "string" },
+            "discord": { "type": "string" },
+            "twitter": { "type": "string" },
+            "instagram": { "type": "string" },
+            "tiktok": { "type": "string" }
+          }
+        },
+        "preferences": {
+          "type": "object",
+          "properties": {
+            "audioLang": { "type": "string", "description": "Preferred default audio track language (es-LAT, ja, en)" },
+            "subtitlesLang": { "type": "string", "description": "Preferred default subtitles language (es, en, off)" }
+          }
+        },
+        "watchlist": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Array of saved content IDs"
+        },
         "termsAccepted": { "type": "boolean", "description": "Whether the user accepted the Terms of Use" },
-        "termsAcceptedAt": { "type": "string", "format": "date-time", "description": "When the user accepted the Terms of Use" }
+        "termsAcceptedAt": { "type": "string", "format": "date-time", "description": "When the user accepted the Terms of Use" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account registration timestamp" }
       },
-      "required": ["id", "name", "avatar", "role", "email", "termsAccepted", "termsAcceptedAt"]
+      "required": ["id", "role", "email"]
     },
     "Profile": {
       "title": "Sub-Profile",

@@ -20,6 +20,8 @@ const Footer: React.FC<FooterProps> = ({ onNavigate }) => {
         { name: 'Inicio', tab: 'home' },
         { name: 'Películas', tab: 'movies' },
         { name: 'Series Gacha', tab: 'series' },
+        { name: 'Géneros', tab: 'genres' },
+        { name: 'Descargas', tab: 'downloads' },
     ];
 
     const supportLinks = [
