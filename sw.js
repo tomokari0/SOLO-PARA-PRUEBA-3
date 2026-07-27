@@ -1,4 +1,4 @@
-const CACHE_NAME = 'seikoyt-cache-v5';
+const CACHE_NAME = 'seikoyt-cache-v6';
 const DOWNLOADS_CACHE_NAME = 'seikotv-downloads';
 const ASSETS_TO_CACHE = [
   '/',
@@ -60,13 +60,20 @@ self.addEventListener('fetch', (event) => {
         .catch(() => caches.match(event.request) || caches.match('/'))
     );
   } else {
-    // Cache first, fallback to network
+    // For static assets (/assets/), perform network fetch and handle potential 404 deployment mismatches
     event.respondWith(
-      caches.match(event.request).then((response) => {
-        if (response) {
-          return response;
+      caches.match(event.request).then((cachedResponse) => {
+        if (cachedResponse) {
+          return cachedResponse;
         }
-        return fetch(event.request);
+        return fetch(event.request).then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            // Only cache valid 200 responses
+            const copy = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          }
+          return networkResponse;
+        });
       })
     );
   }

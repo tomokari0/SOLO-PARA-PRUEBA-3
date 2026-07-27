@@ -4,6 +4,25 @@ import './index.css';
 import App from './App';
 import ErrorBoundary from './src/components/ErrorBoundary';
 
+// Global error handler to catch stale asset loading errors (404s from old deployments)
+window.addEventListener('error', (e) => {
+  const target = e.target as HTMLElement;
+  if (target && (target.tagName === 'SCRIPT' || target.tagName === 'LINK')) {
+    console.warn('Asset load failed, refreshing for latest deployment...', target);
+    if (!sessionStorage.getItem('asset_reload_attempted')) {
+      sessionStorage.setItem('asset_reload_attempted', 'true');
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations().then((registrations) => {
+          for (let reg of registrations) reg.unregister();
+          window.location.reload();
+        });
+      } else {
+        window.location.reload();
+      }
+    }
+  }
+}, true);
+
 // Register Service Worker with active update checking
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
