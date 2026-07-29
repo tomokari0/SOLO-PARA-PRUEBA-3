@@ -528,6 +528,7 @@ const VideoPlayer: React.FC<{
         }
     }, [volume]);
     const [duration, setDuration] = useState(0);
+    const [isNextClicked, setIsNextClicked] = useState(false);
     const [showSkipButton, setShowSkipButton] = useState(false);
     const [showSkipNotification, setShowSkipNotification] = useState(false);
     const [showCopiedToast, setShowCopiedToast] = useState(false);
@@ -535,6 +536,7 @@ const VideoPlayer: React.FC<{
     const [zoomLevel, setZoomLevel] = useState(1);
     const [brightness, setBrightness] = useState(100);
     const hasAutoSkippedRef = useRef<string | null>(null);
+    const prefetchedEpIndexRef = useRef<number | null>(null);
     const idleTimerRef = useRef<NodeJS.Timeout | null>(null);
     const [showScreensaver, setShowScreensaver] = useState(false);
     const screensaverTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -847,6 +849,23 @@ const VideoPlayer: React.FC<{
         if (!activeVideo.id) return;
         if (lastActiveVideoIdRef.current !== activeVideo.id) {
             lastActiveVideoIdRef.current = activeVideo.id;
+            setCurrentTime(0);
+            setDuration(0);
+            setLastTime(0);
+            setIsAudioLoading(false);
+            if (videoRef.current && videoRef.current.readyState >= 1) {
+                try {
+                    videoRef.current.currentTime = 0;
+                } catch (e) {}
+            }
+            if (audioRef.current) {
+                audioRef.current.pause();
+                try {
+                    audioRef.current.removeAttribute('src');
+                    audioRef.current.load();
+                } catch (e) {}
+            }
+
             const progress = watchProgress[activeVideo.id];
             if (progress && progress.currentTime > 10 && (progress.duration === 0 || progress.duration - progress.currentTime > 15)) {
                 setResumeTime(progress.currentTime);
@@ -1021,6 +1040,135 @@ const VideoPlayer: React.FC<{
 
         return () => clearInterval(interval);
     }, [skipIntroTime, autoSkipIntro, handleSkipIntro]);
+
+    // Reset prefetched episode ref and purge expired/irrelevant cache entries when content item or episode changes
+    const PREFETCH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes TTL
+    const prefetchedCacheRef = useRef<Map<number, {
+        timestamp: number;
+        timerId?: NodeJS.Timeout;
+        imgElement?: HTMLImageElement;
+        logoElement?: HTMLImageElement;
+        linkElement?: HTMLLinkElement;
+        aborter?: AbortController;
+    }>>(new Map());
+
+    const purgePrefetchCache = useCallback((keepIndex?: number) => {
+        const now = Date.now();
+        prefetchedCacheRef.current.forEach((entry, idx) => {
+            const isExpired = now - entry.timestamp >= PREFETCH_CACHE_TTL_MS;
+            const isIrrelevant = keepIndex === undefined || idx !== keepIndex;
+            if (isExpired || isIrrelevant) {
+                if (entry.timerId) clearTimeout(entry.timerId);
+                if (entry.imgElement) {
+                    entry.imgElement.src = '';
+                }
+                if (entry.logoElement) {
+                    entry.logoElement.src = '';
+                }
+                if (entry.linkElement && entry.linkElement.parentNode) {
+                    try { entry.linkElement.parentNode.removeChild(entry.linkElement); } catch (e) {}
+                }
+                if (entry.aborter) {
+                    try { entry.aborter.abort(); } catch (e) {}
+                }
+                prefetchedCacheRef.current.delete(idx);
+                console.log(`[Prefetch Cache] Expired/Evicted cached assets for episode index ${idx}`);
+            }
+        });
+    }, []);
+
+    useEffect(() => {
+        prefetchedEpIndexRef.current = null;
+        purgePrefetchCache();
+    }, [item.id, currentEpIndex, purgePrefetchCache]);
+
+    // Unmount cleanup for prefetched cache
+    useEffect(() => {
+        return () => {
+            purgePrefetchCache();
+        };
+    }, [purgePrefetchCache]);
+
+    // Background Prefetcher: preloads next episode metadata, thumbnail, and video headers when current episode passes 90% progress
+    useEffect(() => {
+        if (item.type !== 'series' || !episodes || episodes.length === 0) return;
+        if (currentEpIndex >= episodes.length - 1) return;
+
+        const nextEpTargetIndex = currentEpIndex + 1;
+        if (prefetchedEpIndexRef.current === nextEpTargetIndex) return;
+
+        if (duration > 0 && currentTime > 0 && (currentTime / duration) >= 0.90) {
+            const nextEp = episodes[nextEpTargetIndex];
+            if (!nextEp) return;
+
+            prefetchedEpIndexRef.current = nextEpTargetIndex;
+            console.log(`[Background Prefetcher] Progress >= 90% (${Math.round((currentTime / duration) * 100)}%). Prefetching next episode (Ep ${nextEpTargetIndex + 1}): ${nextEp.title}`);
+
+            // Evict any old or irrelevant entries before populating new cache entry
+            purgePrefetchCache(nextEpTargetIndex);
+
+            const aborter = new AbortController();
+            const cacheEntry: {
+                timestamp: number;
+                timerId?: NodeJS.Timeout;
+                imgElement?: HTMLImageElement;
+                logoElement?: HTMLImageElement;
+                linkElement?: HTMLLinkElement;
+                aborter?: AbortController;
+            } = {
+                timestamp: Date.now(),
+                aborter
+            };
+
+            // Set TTL timer to auto-expire entry if not played within 5 minutes
+            cacheEntry.timerId = setTimeout(() => {
+                console.log(`[Prefetch Cache] 5-min TTL expired for episode index ${nextEpTargetIndex}. Evicting assets.`);
+                purgePrefetchCache();
+            }, PREFETCH_CACHE_TTL_MS);
+
+            // 1. Prefetch Next Episode Thumbnail & Logo
+            const thumbUrl = nextEp.thumbnailUrl || nextEp.stillUrl || nextEp.poster || item.thumbnailUrl || item.banner || item.coverUrl;
+            if (thumbUrl) {
+                const img = new Image();
+                img.src = thumbUrl;
+                cacheEntry.imgElement = img;
+            }
+            if (nextEp.titleLogoUrl) {
+                const logoImg = new Image();
+                logoImg.src = nextEp.titleLogoUrl;
+                cacheEntry.logoElement = logoImg;
+            }
+
+            // 2. Prefetch Next Episode Video Metadata & Headers
+            if (nextEp.videoUrl && (nextEp.videoUrl.startsWith('http://') || nextEp.videoUrl.startsWith('https://'))) {
+                try {
+                    const link = document.createElement('link');
+                    link.rel = 'prefetch';
+                    link.as = 'fetch';
+                    link.href = nextEp.videoUrl;
+                    link.dataset.prefetchEp = String(nextEpTargetIndex);
+                    document.head.appendChild(link);
+                    cacheEntry.linkElement = link;
+                } catch (e) {}
+
+                // Warm up HTTP connection & cache initial video bytes with abort signal
+                fetch(nextEp.videoUrl, {
+                    method: 'GET',
+                    headers: { Range: 'bytes=0-2048' },
+                    mode: 'cors',
+                    signal: aborter.signal
+                }).then(() => {
+                    console.log(`[Background Prefetcher] Successfully preloaded video metadata header for Episode ${nextEpTargetIndex + 1}`);
+                }).catch((err) => {
+                    if (err.name !== 'AbortError') {
+                        // Ignore CORS or range header errors silently in background
+                    }
+                });
+            }
+
+            prefetchedCacheRef.current.set(nextEpTargetIndex, cacheEntry);
+        }
+    }, [item, episodes, currentEpIndex, currentTime, duration, purgePrefetchCache]);
 
     // Inicialización de YouTube Player
     useEffect(() => {
@@ -1465,7 +1613,17 @@ const VideoPlayer: React.FC<{
 
     const handleNext = () => {
         if (currentEpIndex < episodes.length - 1) {
-            setLastTime(0); // Reset time for next episode
+            setIsNextClicked(true);
+            setTimeout(() => setIsNextClicked(false), 1500);
+            setLastTime(0);
+            setCurrentTime(0);
+            setDuration(0);
+            setIsAudioLoading(false);
+            if (videoRef.current) {
+                try {
+                    videoRef.current.currentTime = 0;
+                } catch (e) {}
+            }
             setCurrentEpIndex(prev => prev + 1);
         }
     };
@@ -1907,6 +2065,7 @@ const VideoPlayer: React.FC<{
                 ) : (
                     <>
                         <SeikoMediaEngine 
+                            key={activeVideo.id || `${item.id}_${currentEpIndex}`}
                             videoUrl={activeVideo.url} 
                             serverType={activeVideo.serverType as any}
                             embedCode={activeVideo.embedCode}
@@ -2041,12 +2200,29 @@ const VideoPlayer: React.FC<{
                                         setAutoplayCountdown(null);
                                         handleNext();
                                     }}
-                                    className="flex-1 bg-red-600 hover:bg-red-700 text-white py-3 rounded-xl text-xs md:text-sm font-black uppercase tracking-wider transition-all shadow-[0_0_20px_rgba(239,68,68,0.4)] hover:scale-[1.02] active:scale-95"
+                                    className={`flex-1 bg-red-600 hover:bg-red-700 text-white py-3 rounded-xl text-xs md:text-sm font-black uppercase tracking-wider transition-all shadow-[0_0_20px_rgba(239,68,68,0.4)] hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-2 ${isNextClicked ? 'scale-105 ring-2 ring-red-400 animate-pulse' : ''}`}
                                 >
-                                    Reproducir Ya
+                                    {isNextClicked ? (
+                                        <>
+                                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+                                            <span>Cargando...</span>
+                                        </>
+                                    ) : (
+                                        <span>Reproducir Ya</span>
+                                    )}
                                 </button>
                             </div>
                         </div>
+                    </div>
+                )}
+
+                {/* Toast de confirmación visual al cambiar de episodio */}
+                {isNextClicked && (
+                    <div className="absolute top-20 left-1/2 -translate-x-1/2 bg-[#0a0a0a]/90 backdrop-blur-md border border-red-500/60 text-white px-5 py-2.5 rounded-full z-[350] flex items-center gap-3 shadow-[0_0_30px_rgba(239,68,68,0.5)] animate-bounce pointer-events-none font-sans">
+                        <div className="w-4 h-4 border-2 border-red-500 border-t-transparent rounded-full animate-spin shrink-0" />
+                        <span className="text-xs md:text-sm font-extrabold uppercase tracking-widest text-red-400">
+                            Cargando Siguiente Episodio...
+                        </span>
                     </div>
                 )}
 
@@ -2095,15 +2271,24 @@ const VideoPlayer: React.FC<{
                 {item.type === 'series' && currentEpIndex < episodes.length - 1 && (
                     <button 
                         onClick={handleNext}
-                        className={`absolute bottom-24 md:bottom-28 right-4 md:right-10 bg-[#e5e5e5] hover:bg-white text-black font-semibold text-xs md:text-sm px-4 md:px-5 py-2 md:py-2.5 rounded transition-all duration-300 shadow-2xl z-[180] flex items-center gap-2 cursor-pointer ${showControls ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}
+                        className={`absolute bottom-24 md:bottom-28 right-4 md:right-10 font-bold text-xs md:text-sm px-4 md:px-5 py-2 md:py-2.5 rounded transition-all duration-300 shadow-2xl z-[180] flex items-center gap-2 cursor-pointer ${showControls ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'} ${isNextClicked ? 'bg-red-600 text-white scale-110 ring-4 ring-red-500/60 shadow-[0_0_30px_rgba(239,68,68,0.85)] animate-pulse' : 'bg-[#e5e5e5] hover:bg-white text-black active:scale-90 hover:scale-[1.03]'}`}
                     >
-                        <PlayIcon className="w-3.5 h-3.5 md:w-4 md:h-4 text-black" />
-                        <span>Next Episode</span>
+                        {isNextClicked ? (
+                            <>
+                                <div className="w-3.5 h-3.5 md:w-4 md:h-4 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+                                <span>Cargando Siguiente...</span>
+                            </>
+                        ) : (
+                            <>
+                                <PlayIcon className="w-3.5 h-3.5 md:w-4 md:h-4 text-black" />
+                                <span>Next Episode</span>
+                            </>
+                        )}
                     </button>
                 )}
 
                 {/* Bottom Controls Bar */}
-                <div className={`absolute bottom-0 inset-x-0 bg-gradient-to-t from-black via-black/90 to-transparent pt-12 pb-4 md:pb-6 px-4 md:px-10 flex flex-col gap-2 z-[170] transition-all duration-500 ease-in-out ${showControls ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6 pointer-events-none'}`}>
+                <div className={`absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent pt-8 pb-4 md:pb-6 px-4 md:px-10 flex flex-col gap-2 z-[170] transition-all duration-500 ease-in-out ${showControls ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-6 pointer-events-none'}`}>
                     {/* Full-width Progress Bar */}
                     <div className="group/progress relative h-1.5 md:h-2 flex items-center cursor-pointer mb-1">
                         <input 
@@ -2428,64 +2613,91 @@ const VideoPlayer: React.FC<{
                     </>
                 )}
 
-                {/* Informative Screensaver Overlay */}
+                {/* Informative Screensaver Overlay (Replicated from Image 2) */}
                 {showScreensaver && (
-                    <div className="absolute inset-0 z-[150] bg-black/95 flex items-center p-8 md:p-24 select-none animate-fade-in pointer-events-none transition-all duration-700">
-                        {/* Neon aesthetic accents */}
-                        <div className="absolute left-0 top-0 bottom-0 w-1.5 bg-red-600 shadow-[0_0_25px_rgba(239,68,68,0.9)] animate-pulse" />
-                        <div className="absolute inset-0 bg-gradient-to-r from-red-600/10 via-black/40 to-transparent pointer-events-none" />
+                    <div 
+                        onClick={() => setShowScreensaver(false)}
+                        className="absolute inset-0 z-[180] bg-black/40 flex flex-col justify-between p-6 sm:p-10 md:p-16 select-none animate-fade-in transition-all duration-500 cursor-pointer"
+                    >
+                        {/* Smooth 40% subtle gradient backdrop overlay */}
+                        <div className="absolute inset-0 bg-gradient-to-r from-black/60 via-black/40 to-transparent pointer-events-none" />
 
-                        <div className="max-w-xl text-left space-y-4 md:space-y-6 z-10 p-4">
-                            {/* Dynamic fade-in indicator */}
-                            <div className="flex items-center gap-2">
-                                <span className="w-2 h-2 rounded-full bg-red-600 animate-ping" />
-                                <span className="text-red-500 font-sans font-black text-[10px] md:text-xs uppercase tracking-[0.3em] block">
-                                    Estás viendo...
-                                </span>
-                            </div>
+                        {/* Top-Right Close (X) Button */}
+                        <button 
+                            onClick={(e) => { e.stopPropagation(); setShowScreensaver(false); }}
+                            className="absolute top-6 right-6 md:top-8 md:right-10 text-white/80 hover:text-white p-2 transition-colors cursor-pointer z-20"
+                            title="Cerrar"
+                        >
+                            <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
 
-                            {/* Title Logo (Required <img>) or elegant text fallback */}
+                        {/* Middle-Left Content Block */}
+                        <div className="max-w-2xl text-left space-y-3 md:space-y-4 my-auto z-10 p-2 md:p-4">
+                            {/* "Estás viendo" Header */}
+                            <p className="text-gray-300 font-normal text-lg md:text-xl tracking-normal">
+                                Estás viendo
+                            </p>
+
+                            {/* Title Logo or High-Impact Typography */}
                             <div className="flex items-center">
                                 {((item.type === 'series' && episodes[currentEpIndex]?.titleLogoUrl) || item.titleLogoUrl) ? (
                                     <img 
                                         src={(item.type === 'series' && episodes[currentEpIndex]?.titleLogoUrl) || item.titleLogoUrl} 
                                         alt={item.title} 
-                                        className="max-h-20 sm:max-h-24 md:max-h-32 object-contain filter drop-shadow-[0_0_15px_rgba(239,68,68,0.6)] animate-fade-in" 
+                                        className="max-h-28 sm:max-h-36 md:max-h-44 lg:max-h-52 object-contain filter drop-shadow-md animate-fade-in my-1.5" 
                                         referrerPolicy="no-referrer"
                                     />
                                 ) : (
-                                    <h1 className="text-4xl sm:text-5xl md:text-6xl font-black text-white uppercase tracking-wider font-sans border-b-2 border-red-600 pb-2 shadow-[0_0_25px_rgba(220,38,38,0.3)]">
+                                    <h1 className="text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-extrabold text-white tracking-tight leading-none drop-shadow-md my-1">
                                         {item.title}
                                     </h1>
                                 )}
                             </div>
 
-                            {/* Metadatos (Año, Temporada, Episodio) */}
-                            <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-xs md:text-sm font-bold text-gray-400 tracking-wider">
-                                <span className="bg-white/10 px-2.5 py-0.5 rounded text-white text-[9px] md:text-xs">{item.releaseYear}</span>
-                                <span>•</span>
-                                {item.type === 'series' && episodes[currentEpIndex] ? (
-                                    <>
-                                        <span className="text-red-500">Temporada 1</span>
-                                        <span>•</span>
-                                        <span>Ep. {(episodes[currentEpIndex] as any).episodeNumber || (currentEpIndex + 1)}</span>
-                                    </>
-                                ) : (
-                                    <span className="text-red-500 font-bold uppercase tracking-widest text-[9px] md:text-xs">Película</span>
-                                )}
-                                <span>•</span>
-                                <span className="text-gray-500 uppercase tracking-widest text-[9px] md:text-xs font-sans">SeikoYT Premium</span>
+                            {/* Metadata Row: Año • Rating • Duración/Temporadas */}
+                            <div className="flex items-center gap-3 text-sm md:text-base font-semibold text-gray-300 flex-wrap my-1">
+                                <span>{item.releaseYear || '2025'}</span>
+                                <span className="border border-white/30 bg-white/10 px-1.5 py-0.5 rounded text-xs font-bold text-white tracking-wider">
+                                    {item.rating || 'U/A 16+'}
+                                </span>
+                                <span>
+                                    {item.type === 'series' ? `${item.seasonsCount || 1} Temporadas` : (item.duration || '2h 10m')}
+                                </span>
                             </div>
 
-                            {/* Sinopsis with subtle fade-out effect */}
-                            <div className="relative">
-                                <p className="text-xs sm:text-sm md:text-base text-gray-300 leading-relaxed font-sans line-clamp-3 select-none">
-                                    {(item.type === 'series' && episodes[currentEpIndex]?.description) || item.description}
+                            {/* Episode Identification Line */}
+                            {item.type === 'series' && episodes[currentEpIndex] && (
+                                <p className="text-base md:text-lg font-bold text-white mt-3 mb-1">
+                                    Episodio {(episodes[currentEpIndex] as any).episodeNumber || (currentEpIndex + 1)}: {episodes[currentEpIndex]?.title || `Ep ${(episodes[currentEpIndex] as any).episodeNumber || (currentEpIndex + 1)}`}
                                 </p>
-                                {/* Linear-gradient overlay creating a blur/fade-out at the bottom of the description */}
-                                <div className="absolute bottom-0 left-0 right-0 h-4 bg-gradient-to-t from-black/0 to-transparent pointer-events-none" />
-                            </div>
+                            )}
+
+                            {/* Synopsis / Description */}
+                            <p className="text-sm md:text-base text-gray-300 leading-relaxed font-normal line-clamp-3 select-none max-w-xl">
+                                {(item.type === 'series' && episodes[currentEpIndex]?.description) || item.description}
+                            </p>
                         </div>
+
+                        {/* Bottom-Right "Siguiente episodio" Pill Button */}
+                        {item.type === 'series' && currentEpIndex < episodes.length - 1 && (
+                            <div className="absolute bottom-8 right-8 md:bottom-12 md:right-12 z-20">
+                                <button 
+                                    onClick={(e) => {
+                                        e.stopPropagation();
+                                        setShowScreensaver(false);
+                                        handleNext();
+                                    }}
+                                    className="flex items-center gap-2.5 bg-white/20 hover:bg-white/30 active:bg-white/40 text-white font-semibold text-xs md:text-sm px-4 py-2.5 rounded-md transition-all backdrop-blur-md border border-white/15 shadow-lg cursor-pointer"
+                                >
+                                    <svg className="w-4 h-4 fill-current" viewBox="0 0 24 24">
+                                        <path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" />
+                                    </svg>
+                                    Siguiente episodio
+                                </button>
+                            </div>
+                        )}
                     </div>
                 )}
 

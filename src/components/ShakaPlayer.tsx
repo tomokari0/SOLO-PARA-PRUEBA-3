@@ -37,8 +37,8 @@ const ShakaPlayer: React.FC<ShakaPlayerProps> = ({ src, className, onClose, vide
   }, []);
 
   useEffect(() => {
+    let isCancelled = false;
     let activePlayer: shaka.Player | null = null;
-    const previousTime = videoRef.current ? videoRef.current.currentTime : 0;
 
     const initPlayer = async () => {
       if (!videoRef.current) return;
@@ -48,16 +48,17 @@ const ShakaPlayer: React.FC<ShakaPlayerProps> = ({ src, className, onClose, vide
 
       if (!shaka.Player.isBrowserSupported()) {
         console.warn('Browser not supported for Shaka Player, playing natively');
-        videoRef.current.src = src;
-        if (previousTime > 0) {
-          videoRef.current.currentTime = previousTime;
+        if (!isCancelled && videoRef.current) {
+          videoRef.current.src = src;
         }
         return;
       }
 
       const newPlayer = new shaka.Player(videoRef.current);
       activePlayer = newPlayer;
-      setPlayer(newPlayer);
+      if (!isCancelled) {
+        setPlayer(newPlayer);
+      }
       
       // Aggressive buffering configuration
       newPlayer.configure({
@@ -75,16 +76,19 @@ const ShakaPlayer: React.FC<ShakaPlayerProps> = ({ src, className, onClose, vide
 
       try {
         await newPlayer.load(src);
+        if (isCancelled) {
+          await newPlayer.destroy().catch(() => {});
+          return;
+        }
         console.log('Video loaded successfully with Shaka Player');
-        if (videoRef.current && previousTime > 0) {
-          videoRef.current.currentTime = previousTime;
+        if (videoRef.current) {
+          videoRef.current.play().catch(e => console.warn('Autoplay on next episode failed:', e));
         }
       } catch (error: any) {
+        if (isCancelled) return;
         console.warn('Shaka Player load failed, falling back gracefully to native video element:', error?.message || error);
         
-        // Detach and destroy Shaka instance cleanly to avoid media element state conflict
         try {
-          await newPlayer.detach();
           await newPlayer.destroy();
         } catch (detachErr) {
           // Ignore detach error during cleanup
@@ -98,17 +102,8 @@ const ShakaPlayer: React.FC<ShakaPlayerProps> = ({ src, className, onClose, vide
           videoRef.current.src = src;
           try {
             videoRef.current.load();
+            videoRef.current.play().catch(() => {});
           } catch (e) {}
-
-          if (previousTime > 0) {
-            const handleLoadedMetadata = () => {
-              if (videoRef.current) {
-                videoRef.current.currentTime = previousTime;
-                videoRef.current.removeEventListener('loadedmetadata', handleLoadedMetadata);
-              }
-            };
-            videoRef.current.addEventListener('loadedmetadata', handleLoadedMetadata);
-          }
         }
       }
     };
@@ -116,15 +111,9 @@ const ShakaPlayer: React.FC<ShakaPlayerProps> = ({ src, className, onClose, vide
     initPlayer();
 
     return () => {
+      isCancelled = true;
       if (activePlayer) {
         activePlayer.destroy().catch((err) => console.warn('Error destroying Shaka instance:', err));
-      }
-      if (videoRef.current) {
-        // Stop any active Native playbacks and reload to clear buffers
-        videoRef.current.removeAttribute('src');
-        try {
-          videoRef.current.load();
-        } catch (e) {}
       }
     };
   }, [src]);
@@ -137,7 +126,6 @@ const ShakaPlayer: React.FC<ShakaPlayerProps> = ({ src, className, onClose, vide
         autoPlay
         playsInline
         crossOrigin="anonymous"
-        controls
       >
         {subtitles && subtitles.map((sub, index) => (
           <track
