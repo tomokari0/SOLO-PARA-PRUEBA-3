@@ -2208,9 +2208,6 @@ const VideoPlayer: React.FC<{
                         onClick={() => handleSkipSegment(activeSkipSegment)}
                         className="absolute bottom-24 md:bottom-32 left-4 md:left-8 bg-black/85 backdrop-blur-md text-white px-5 md:px-7 py-3 md:py-3.5 rounded-xl font-black text-xs md:text-sm border-2 border-red-600 shadow-[0_0_25px_rgba(220,38,38,0.6)] animate-fade-in hover:scale-105 transition-all z-[165] flex items-center gap-2.5 uppercase tracking-wider group"
                     >
-                        <span className="text-red-400 font-mono text-xs md:text-sm group-hover:text-white transition-colors">
-                            {formatSecondsToTime(activeSkipSegment.start)} - {formatSecondsToTime(activeSkipSegment.end)}
-                        </span>
                         <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-ping" />
                         <span>{activeSkipSegment.label || 'Omitir intro'}</span>
                     </button>
