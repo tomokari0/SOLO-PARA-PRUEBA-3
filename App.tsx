@@ -1466,12 +1466,68 @@ const VideoPlayer: React.FC<{
     const toggleFullscreen = useCallback(() => {
         if (!playerContainerRef.current) return;
         if (!document.fullscreenElement) {
-            playerContainerRef.current.requestFullscreen().catch(err => {
+            playerContainerRef.current.requestFullscreen().then(() => {
+                if (screen.orientation && 'lock' in screen.orientation) {
+                    (screen.orientation as any).lock('landscape').catch(() => {});
+                }
+            }).catch(err => {
                 console.error(`Error attempting to enable full-screen mode: ${err.message}`);
             });
         } else {
-            document.exitFullscreen();
+            document.exitFullscreen().then(() => {
+                if (screen.orientation && 'unlock' in screen.orientation) {
+                    try { (screen.orientation as any).unlock(); } catch (e) {}
+                }
+            }).catch(() => {});
         }
+    }, []);
+
+    // Auto pantalla completa horizontal en móvil al entrar al reproductor
+    useEffect(() => {
+        const isMobile = window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        if (!isMobile) return;
+
+        const enterMobileLandscapeFullscreen = async () => {
+            try {
+                if (playerContainerRef.current && !document.fullscreenElement) {
+                    if (playerContainerRef.current.requestFullscreen) {
+                        await playerContainerRef.current.requestFullscreen();
+                    } else if ((playerContainerRef.current as any).webkitRequestFullscreen) {
+                        await (playerContainerRef.current as any).webkitRequestFullscreen();
+                    }
+                } else if (videoRef.current && (videoRef.current as any).webkitEnterFullscreen) {
+                    (videoRef.current as any).webkitEnterFullscreen();
+                }
+
+                if (screen.orientation && 'lock' in screen.orientation) {
+                    await (screen.orientation as any).lock('landscape').catch(() => {});
+                }
+            } catch (err) {
+                console.log("Auto mobile landscape fullscreen prevented or unsupported:", err);
+            }
+        };
+
+        const timer = setTimeout(() => {
+            enterMobileLandscapeFullscreen();
+        }, 150);
+
+        const handleFirstTouch = () => {
+            enterMobileLandscapeFullscreen();
+        };
+
+        window.addEventListener('touchstart', handleFirstTouch, { once: true });
+        window.addEventListener('click', handleFirstTouch, { once: true });
+
+        return () => {
+            clearTimeout(timer);
+            window.removeEventListener('touchstart', handleFirstTouch);
+            window.removeEventListener('click', handleFirstTouch);
+            if (screen.orientation && 'unlock' in screen.orientation) {
+                try {
+                    screen.orientation.unlock();
+                } catch (e) {}
+            }
+        };
     }, []);
 
     useEffect(() => {
