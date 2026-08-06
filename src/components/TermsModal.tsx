@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../../AuthContext';
+import { auth } from '../../firebaseConfig';
 import { ShieldCheck, Scroll, AlertCircle, Sparkles } from 'lucide-react';
 
 export const TermsModal: React.FC = () => {
@@ -53,7 +54,7 @@ export const TermsModal: React.FC = () => {
     };
 
     const logout = () => {
-        import('../../firebaseConfig').then(({ auth }) => auth.signOut());
+        auth.signOut();
     };
 
     return (

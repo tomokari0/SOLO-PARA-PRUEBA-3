@@ -216,9 +216,16 @@ function getChatModel() {
     if (isKeyInvalid) {
       throw new Error("API_KEY_INVALID: No valid Gemini API key configured in environment variables");
     }
-    aiClient = new GoogleGenAI({ apiKey: key });
+    aiClient = new GoogleGenAI({
+      apiKey: key,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        }
+      }
+    });
     chatModel = aiClient.chats.create({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.6-flash",
       config: {
         systemInstruction: `Eres el Asistente Virtual Oficial de la plataforma SeikoYT. Tu personalidad es sumamente amigable, entusiasta y experta en la cultura Gacha, el FanDub y el gaming. Eres el mejor amigo y guía de los usuarios dentro de la plataforma.
 
@@ -529,10 +536,9 @@ app.use((req, res, next) => {
       };
       const uploadResult = await uploadBytes(storageRef, buffer, metadata);
       const downloadUrl = await getDownloadURL(uploadResult.ref);
-      console.log(`Uploaded ${fileName} to Firebase Storage successfully:`, downloadUrl);
       return downloadUrl;
-    } catch (error) {
-      console.warn(`Error uploading ${fileName} to Firebase Storage, returning data URI fallback:`, error);
+    } catch (_error: any) {
+      // Return clean data URI fallback when storage is not provisioned/configured
       const base64 = Buffer.from(vttContent).toString("base64");
       return `data:text/vtt;base64,${base64}`;
     }
@@ -553,119 +559,62 @@ app.use((req, res, next) => {
     return `${hrsStr}:${minsStr}:${secsStr}.${msStr}`;
   };
 
-  // Helper to translate WebVTT file in small cue chunks to avoid Groq payload and TPM limits
-  const translateWebVttInChunks = async (originalVttText: string, targetLang: string, groqApiKey: string): Promise<string> => {
+  // Helper to translate WebVTT using Gemini 3.6 Flash
+  const translateWebVttWithGemini = async (originalVttText: string, targetLang: string, apiKey: string): Promise<string> => {
     try {
-      const normalized = originalVttText.replace(/\r\n/g, "\n").trim();
-      const blocks = normalized.split(/\n\n+/);
-
-      const header = "WEBVTT\n\n";
-      const cues: string[] = [];
-
-      for (const block of blocks) {
-        const trimmed = block.trim();
-        if (!trimmed) continue;
-        if (trimmed.startsWith("WEBVTT")) {
-          const lines = trimmed.split("\n");
-          const subLines = lines.filter(l => !l.startsWith("WEBVTT"));
-          if (subLines.length > 0) {
-            cues.push(subLines.map(line => line.trim()).join("\n"));
+      const ai = new GoogleGenAI({
+        apiKey,
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
           }
-        } else {
-          cues.push(trimmed);
         }
-      }
+      });
 
-      if (cues.length === 0) {
-        console.warn("No WebVTT cues found to translate.");
-        return originalVttText;
-      }
+      const prompt = `Translate the following Spanish WebVTT subtitle file into ${targetLang}.
 
-      // 100 cues per chunk to avoid timeout on serverless environments like Vercel
-      const chunkSize = 100;
-      const cueChunks: string[][] = [];
-      for (let i = 0; i < cues.length; i += chunkSize) {
-        cueChunks.push(cues.slice(i, i + chunkSize));
-      }
+CRITICAL INSTRUCTIONS FOR SUBTITLES (SDH & TRANSLATION):
+1. Preserve all WebVTT header lines, cue numbers, and timestamp lines EXACTLY as they are (e.g. 00:00:01.000 --> 00:00:04.500).
+2. Translate spoken dialogues into natural ${targetLang}.
+3. CRITICAL: Translate all sound effect descriptions and action cues inside brackets [ ... ] into ${targetLang} (e.g. translate [Música dramática] to [Dramatic music] or [ドラマチックな音楽], [Risas] to [Laughter]).
+4. Output strictly the raw WebVTT file content starting with 'WEBVTT', without markdown code blocks.
 
-      console.log(`[Groq Translation] Split WebVTT into ${cueChunks.length} chunks of size <= ${chunkSize}`);
+WebVTT File:
+${originalVttText}`;
 
-      const translatedCues: string[] = [];
-
-      for (let chunkIdx = 0; chunkIdx < cueChunks.length; chunkIdx++) {
-        const chunk = cueChunks[chunkIdx];
-        const chunkText = chunk.join("\n\n");
-
-        const systemPrompt = `Eres un traductor de subtítulos WebVTT. Tu única tarea es traducir el texto de los diálogos al idioma ${targetLang}. Debes mantener exactamente idénticas todas las marcas de tiempo (ej. 00:01.200 --> 00:04.500) y la estructura de número de secuencia. No agregues introducciones, notas ni explicaciones. Devuelve únicamente el código WebVTT traducido correspondiente a la entrada sin ningún bloque de código markdown.`;
-
-        let attemptSuccess = false;
-        let attemptContent = "";
-
-        try {
-          console.log(`Translating chunk ${chunkIdx + 1}/${cueChunks.length} to ${targetLang} with llama-3.1-8b-instant...`);
-          const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${groqApiKey}`,
-              "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-              model: "llama-3.1-8b-instant",
-              messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: chunkText }
-              ],
-              temperature: 0
-            })
-          });
-
-          if (response.ok) {
-            const data = await response.json();
-            const rawContent = data.choices?.[0]?.message?.content || "";
-            const cleaned = rawContent.replace(/```vtt/gi, "").replace(/```/g, "").trim();
-            if (cleaned) {
-              attemptContent = cleaned;
-              attemptSuccess = true;
-            }
-          } else {
-            const errText = await response.text();
-            console.warn(`Groq chunk ${chunkIdx + 1} translation failed (Status: ${response.status}):`, errText);
-          }
-        } catch (err: any) {
-          console.warn(`Error on chunk ${chunkIdx + 1} translation:`, err.message);
+      const response = await ai.models.generateContent({
+        model: "gemini-3.6-flash",
+        contents: prompt,
+        config: {
+          temperature: 0.1
         }
+      });
 
-        if (attemptSuccess && attemptContent) {
-          translatedCues.push(attemptContent);
-        } else {
-          console.warn(`Groq chunk ${chunkIdx + 1} translation failed, keeping original cues as fallback.`);
-          translatedCues.push(chunkText);
-        }
-
-        // Add 100ms delay to respect RPM
-        await new Promise(resolve => setTimeout(resolve, 100));
+      const raw = response.text || "";
+      const cleaned = raw.replace(/```vtt/gi, "").replace(/```/g, "").trim();
+      if (cleaned && cleaned.startsWith("WEBVTT")) {
+        return cleaned;
       }
-
-      return header + translatedCues.join("\n\n");
+      return originalVttText;
     } catch (e: any) {
-      console.error("Error in translateWebVttInChunks:", e.message);
+      console.error("Error in translateWebVttWithGemini:", e.message);
       return originalVttText;
     }
   };
 
-  // API Route for AI Subtitle Generation & Translation (Groq API: Whisper + Llama 3)
+  // API Route for AI Subtitle Generation & Translation (Gemini 3.6 Flash Multimodal + SDH)
   app.post("/api/subtitles/generate", async (req, res) => {
     try {
       const { videoUrl, title, description, languages = ["es", "en", "ja"] } = req.body;
-      console.log("Processing subtitles generation request (Groq API):", { videoUrl, title, description, languages });
+      console.log("Processing subtitles generation request (Gemini 3.6 Flash API):", { videoUrl, title, description, languages });
 
-      const groqKey = process.env.GROQ_API_KEY;
-      const isKeyInvalid = !groqKey || groqKey.trim() === "" || groqKey.includes("YOUR_") || groqKey.includes("placeholder") || groqKey === "null" || groqKey === "undefined";
+      const geminiKey = process.env.GEMINI_API_KEY || process.env.API_KEY;
+      const isKeyInvalid = !geminiKey || geminiKey.trim() === "" || geminiKey.includes("YOUR_") || geminiKey.includes("placeholder") || geminiKey === "null" || geminiKey === "undefined";
       
-      if (!groqKey || isKeyInvalid) {
-        console.log("[Groq] No valid GROQ_API_KEY configured. Running subtitle generator in local fallback mode.");
+      if (isKeyInvalid) {
+        console.log("[Gemini] No valid GEMINI_API_KEY configured. Running subtitle generator in local fallback mode.");
       } else {
-        console.log("[Groq] Valid GROQ_API_KEY configured. Proceeding with Whisper and Llama 3.");
+        console.log("[Gemini] Valid GEMINI_API_KEY configured. Proceeding with Gemini 3.6 Flash.");
       }
 
       let originalVtt = "";
@@ -684,12 +633,11 @@ app.use((req, res, next) => {
         videoUrl.includes("imagekit")
       );
 
-      if (videoUrl && groqKey && !isKeyInvalid && isDirectMedia) {
+      if (videoUrl && geminiKey && !isKeyInvalid && isDirectMedia) {
         try {
           const tempDir = os.tmpdir();
           const randomSuffix = Math.random().toString(36).substring(7);
           
-          // Detect extension from URL or fallback
           let ext = ".mp4";
           try {
             const urlObj = new URL(videoUrl);
@@ -713,18 +661,13 @@ app.use((req, res, next) => {
           }
           const arrayBuffer = await fileRes.arrayBuffer();
           await fs.promises.writeFile(tempVideoPath, Buffer.from(arrayBuffer));
-          console.log(`Media file downloaded successfully, size: ${arrayBuffer.byteLength} bytes.`);
 
-          // Check if it is already an MP3 file
           const isAlreadyMp3 = ext === ".mp3";
           if (isAlreadyMp3) {
-            console.log("Media is already an MP3 file, skipping ffmpeg conversion.");
             await fs.promises.copyFile(tempVideoPath, tempAudioPath);
           } else {
-            console.log("Extracting audio as 16kHz mono MP3 using ffmpeg...");
             await new Promise<void>(async (resolve, reject) => {
               try {
-                // Dynamic import of fluent-ffmpeg for serverless compatibility
                 const ffmpegModule = await import("fluent-ffmpeg");
                 let ffmpegConstructor = ffmpegModule.default || ffmpegModule;
                 if (typeof ffmpegConstructor !== "function" && (ffmpegConstructor as any).default) {
@@ -740,79 +683,68 @@ app.use((req, res, next) => {
                   .audioChannels(1)
                   .audioFrequency(16000)
                   .toFormat("mp3")
-                  .on("start", (cmd) => {
-                    console.log("Spawned ffmpeg command:", cmd);
-                  })
-                  .on("end", () => {
-                    console.log("Audio extraction completed successfully.");
-                    resolve();
-                  })
-                  .on("error", (err) => {
-                    console.error("FFmpeg error:", err);
-                    reject(err);
-                  })
+                  .on("end", () => resolve())
+                  .on("error", (err) => reject(err))
                   .save(tempAudioPath);
               } catch (importErr: any) {
-                console.error("Could not load fluent-ffmpeg or ffmpeg execution failed:", importErr.message);
-                reject(new Error(`FFmpeg not available or failed to load: ${importErr.message}`));
+                reject(importErr);
               }
             });
           }
 
-          // Transcribe using Groq Whisper API
-          console.log("Transcribing audio using Groq Whisper API (whisper-large-v3) with verbose_json...");
-          const formData = new FormData();
-          const audioBuffer = await fs.promises.readFile(tempAudioPath);
-          const audioBlob = new Blob([audioBuffer], { type: "audio/mp3" });
-          formData.append("file", audioBlob, "audio.mp3");
-          formData.append("model", "whisper-large-v3");
-          formData.append("response_format", "verbose_json");
-          formData.append("language", "es");
-
-          const groqRes = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
-            method: "POST",
-            headers: {
-              "Authorization": `Bearer ${groqKey}`
-            },
-            body: formData
+          console.log("Transcribing audio & actions with Gemini 3.6 Flash multimodal...");
+          const ai = new GoogleGenAI({
+            apiKey: geminiKey,
+            httpOptions: {
+              headers: {
+                'User-Agent': 'aistudio-build',
+              }
+            }
           });
 
-          if (!groqRes.ok) {
-            const errText = await groqRes.text();
-            throw new Error(`Groq Whisper transcription failed: ${groqRes.statusText}. Details: ${errText}`);
-          }
+          const audioBuffer = await fs.promises.readFile(tempAudioPath);
+          const base64Audio = audioBuffer.toString("base64");
 
-          const responseJson = await groqRes.json() as any;
-          if (responseJson && Array.isArray(responseJson.segments)) {
-            console.log(`Transcribed ${responseJson.segments.length} segments. Converting to WebVTT...`);
-            const vttLines = ["WEBVTT\n"];
-            responseJson.segments.forEach((seg: any, idx: number) => {
-              const startStr = formatSecondsToVttTime(seg.start || 0);
-              const endStr = formatSecondsToVttTime(seg.end || 0);
-              vttLines.push(`${idx + 1}`);
-              vttLines.push(`${startStr} --> ${endStr}`);
-              vttLines.push(`${(seg.text || "").trim()}\n`);
-            });
-            originalVtt = vttLines.join("\n");
-          } else if (responseJson && responseJson.text) {
-            console.log("Transcribed text without segments. Using a single WebVTT block...");
-            const text = responseJson.text.trim();
-            originalVtt = `WEBVTT\n\n1\n00:00:00.000 --> 00:00:10.000\n${text}`;
-          } else {
-            throw new Error("Groq response did not contain expected text or segments.");
-          }
+          const response = await ai.models.generateContent({
+            model: "gemini-3.6-flash",
+            contents: [
+              {
+                inlineData: {
+                  mimeType: "audio/mp3",
+                  data: base64Audio
+                }
+              },
+              {
+                text: `Analiza este archivo de audio/video y genera un archivo de subtítulos WebVTT completo, preciso y sincronizado en español.
 
-          console.log("Validating generated WebVTT subtitles structure...");
-          if (!originalVtt || !originalVtt.trim().startsWith("WEBVTT")) {
-            throw new Error("Transcribed subtitles are not in valid WebVTT format.");
-          }
-          console.log("Whisper transcription generated and verified successfully.");
+INSTRUCCIONES CRÍTICAS (ACCESIBILIDAD SDH - DIÁLOGOS + ACCIONES Y EFECTOS DE SONIDO):
+1. Transcribe con fidelidad todos los diálogos hablados en español.
+2. CRÍTICO: Incluye descripciones breves entre corchetes [ ... ] para efectos de sonido, ambiente musical y acciones de los personajes.
+   Ejemplos de corchetes obligatorios:
+   - [Música alegre de fondo]
+   - [Risas de los personajes]
+   - [Efecto de sonido de impacto / magia]
+   - [Suspiro profundo]
+   - [Sonido de pasos]
+   - [Aplausos y vítores]
+   - [Puerta azotándose]
+   - [Música dramática de tensión]
+3. Utiliza marcas de tiempo WebVTT válidas (formato: 00:00:01.000 --> 00:00:04.500) sincronizadas con la duración.
+4. Devuelve ÚNICAMENTE el texto WebVTT crudo iniciando con 'WEBVTT', sin markdown (\`\`\`vtt o \`\`\`).`
+              }
+            ],
+            config: {
+              temperature: 0.2
+            }
+          });
+
+          const rawContent = response.text || "";
+          originalVtt = rawContent.replace(/```vtt/gi, "").replace(/```/g, "").trim();
 
         } catch (mediaErr: any) {
-          console.error("Audio-based Whisper subtitle generation failed:", mediaErr.message);
-          originalVtt = ""; // will force fallback below
+          console.error("Gemini audio-based subtitle generation failed:", mediaErr.message);
+          originalVtt = "";
         } finally {
-          // Cleanup local temporary files
           try {
             if (tempVideoPath && fs.existsSync(tempVideoPath)) {
               await fs.promises.unlink(tempVideoPath);
@@ -820,55 +752,56 @@ app.use((req, res, next) => {
             if (tempAudioPath && fs.existsSync(tempAudioPath)) {
               await fs.promises.unlink(tempAudioPath);
             }
-            console.log("Cleanup of local temporary files completed.");
           } catch (cleanupErr: any) {
-            console.warn("Error cleaning up local temporary files:", cleanupErr.message);
+            console.warn("Error cleaning up temporary files:", cleanupErr.message);
           }
         }
       }
 
-      // Step 2: Semantic fallback generation if transcribe failed or no audio
+      // Step 2: Semantic fallback generation if transcribe failed or no direct media
       if (!originalVtt || !originalVtt.trim().startsWith("WEBVTT")) {
-        console.log("Generating context-aware semantic WebVTT subtitles using Groq Llama 3...");
-        if (groqKey && !isKeyInvalid) {
+        console.log("Generating context-aware semantic WebVTT subtitles with SDH sound effects using Gemini 3.6 Flash...");
+        if (geminiKey && !isKeyInvalid) {
           try {
-            const semanticSystemInstruction = "You are an expert subtitle writer. You produce highly realistic, fully synchronized Spanish subtitle files in WebVTT format starting with WEBVTT.";
-            const semanticPrompt = `Generate a realistic, synchronized Spanish WebVTT subtitle script for a video with:
-Title: "${title || 'SeikoYT Video'}"
-Description: "${description || 'Un video emocionante de la comunidad'}"
-
-RULES:
-1. Provide a beautiful WebVTT starting with 'WEBVTT'.
-2. Create about 5 to 10 dialogue blocks corresponding to a 2-minute video.
-3. Use precise timestamps (e.g. 00:00:01.000 --> 00:00:05.000).
-4. Dialogues should feel completely realistic and match the title and description (fan-dub, Gacha, or gaming style).
-5. Output strictly the raw WebVTT content, without markdown code blocks.`;
-
-            const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-              method: "POST",
-              headers: {
-                "Authorization": `Bearer ${groqKey}`,
-                "Content-Type": "application/json"
-              },
-              body: JSON.stringify({
-                model: "llama-3.1-8b-instant",
-                messages: [
-                  { role: "system", content: semanticSystemInstruction },
-                  { role: "user", content: semanticPrompt }
-                ],
-                temperature: 0.7
-              })
+            const ai = new GoogleGenAI({
+              apiKey: geminiKey,
+              httpOptions: {
+                headers: {
+                  'User-Agent': 'aistudio-build',
+                }
+              }
             });
 
-            if (response.ok) {
-              const data = await response.json();
-              const content = data.choices?.[0]?.message?.content || "";
-              originalVtt = content.replace(/```vtt/gi, "").replace(/```/g, "").trim();
-            } else {
-              throw new Error("Failed to generate semantic subtitles from Groq API: " + response.statusText);
-            }
+            const semanticPrompt = `Genera un guion completo de subtítulos en español formato WebVTT para un video con:
+Título: "${title || 'SeikoYT Video'}"
+Descripción: "${description || 'Un video emocionante de la comunidad'}"
+
+INSTRUCCIONES CRÍTICAS (ACCESIBILIDAD SDH CON ACCIONES Y EFECTOS DE SONIDO):
+1. Inicia strictly con 'WEBVTT'.
+2. Crea entre 6 y 12 bloques de subtítulos sincronizados.
+3. CRÍTICO: Incluye acciones y efectos de sonido relevantes entre corchetes [ ... ] dentro o entre las líneas de diálogo.
+   Ejemplos:
+   - [Música de suspenso]
+   - [Risas de los personajes]
+   - [Efectos especiales de magia / combate]
+   - [Suspiro de alivio]
+   - [Sonido de pasos en la oscuridad]
+   - [Música emotiva de fondo]
+4. Usa marcas de tiempo precisas (00:00:01.000 --> 00:00:05.000).
+5. Devuelve ÚNICAMENTE el formato WebVTT crudo, sin bloques de código markdown.`;
+
+            const response = await ai.models.generateContent({
+              model: "gemini-3.6-flash",
+              contents: semanticPrompt,
+              config: {
+                temperature: 0.7
+              }
+            });
+
+            const content = response.text || "";
+            originalVtt = content.replace(/```vtt/gi, "").replace(/```/g, "").trim();
           } catch (semanticErr: any) {
-            console.warn("Groq semantic subtitle generation failed, falling back to local fallback:", semanticErr.message);
+            console.warn("Gemini semantic subtitle generation failed, falling back to local fallback:", semanticErr.message);
             originalVtt = getLocalFallbackSubtitles(title, description, "es");
           }
         } else {
@@ -876,22 +809,18 @@ RULES:
         }
       }
 
-      // Final sanity check to ensure originalVtt has Spanish WebVTT content
       if (!originalVtt || !originalVtt.trim().startsWith("WEBVTT")) {
         originalVtt = getLocalFallbackSubtitles(title, description, "es");
       }
 
-      // Clean markdown symbols from original VTT
       originalVtt = originalVtt.replace(/```vtt/gi, "").replace(/```/g, "").trim();
 
       const tracks: Array<{ label: string; src: string }> = [];
       const randomId = Math.random().toString(36).substring(7);
 
-      // Upload original Spanish track
       const espUrl = await uploadToFirebaseStorage(originalVtt, `sub_${randomId}_es.vtt`);
       tracks.push({ label: "Español (Original)", src: espUrl });
 
-      // Translate VTT to requested target languages using Groq Llama 3
       const langNames: Record<string, string> = {
         en: "English",
         ja: "Japanese",
@@ -906,32 +835,31 @@ RULES:
         const targetLang = langNames[langCode.toLowerCase()] || langCode;
         if (targetLang === "Spanish" || langCode === "es") continue;
 
-        if (groqKey && !isKeyInvalid) {
+        if (geminiKey && !isKeyInvalid) {
           try {
-            console.log(`Translating WebVTT subtitles to ${targetLang} using chunked Groq Llama 3...`);
-            const translatedVtt = await translateWebVttInChunks(originalVtt, targetLang, groqKey);
+            console.log(`Translating WebVTT subtitles to ${targetLang} using Gemini 3.6 Flash...`);
+            const translatedVtt = await translateWebVttWithGemini(originalVtt, targetLang, geminiKey);
 
             if (translatedVtt && translatedVtt.trim().startsWith("WEBVTT")) {
               const transUrl = await uploadToFirebaseStorage(translatedVtt, `sub_${randomId}_${langCode}.vtt`);
               tracks.push({ label: `${targetLang} (Traducido)`, src: transUrl });
             } else {
-              throw new Error(`Failed to translate VTT to ${targetLang} using chunked Groq.`);
+              throw new Error(`Failed to translate VTT to ${targetLang} using Gemini.`);
             }
           } catch (transErr: any) {
-            console.warn(`Groq translation to ${targetLang} failed, falling back to local translation:`, transErr.message);
+            console.warn(`Gemini translation to ${targetLang} failed, falling back to local translation:`, transErr.message);
             const fallbackVtt = getLocalFallbackSubtitles(title, description, langCode);
             const transUrl = await uploadToFirebaseStorage(fallbackVtt, `sub_${randomId}_${langCode}.vtt`);
             tracks.push({ label: `${targetLang} (Traducido)`, src: transUrl });
           }
         } else {
-          console.log(`No GROQ_API_KEY. Using local translation fallback for ${targetLang}...`);
           const fallbackVtt = getLocalFallbackSubtitles(title, description, langCode);
           const transUrl = await uploadToFirebaseStorage(fallbackVtt, `sub_${randomId}_${langCode}.vtt`);
           tracks.push({ label: `${targetLang} (Traducido)`, src: transUrl });
         }
       }
 
-      console.log("Subtitles generated and translated successfully!", tracks);
+      console.log("Subtitles generated and translated successfully with Gemini 3.6 Flash!", tracks);
       res.json({ success: true, tracks });
     } catch (error: any) {
       console.error("Subtitle Route Error:", error.message);

@@ -1,6 +1,12 @@
 
 import React from 'react';
 
+export interface SkipSegment {
+  label: string; // e.g. "Intro", "Intermedio", "Outro", "Resumen"
+  start: number; // in seconds
+  end: number;   // in seconds
+}
+
 export interface Episode {
   id: string;
   title: string;
@@ -14,6 +20,7 @@ export interface Episode {
   introStart?: number;
   introEnd?: number;
   skipIntro?: number;
+  skipSegments?: SkipSegment[];
   titleLogoUrl?: string;
   seasonId?: string;
   seasonNumber?: number;
@@ -63,6 +70,7 @@ export interface Content {
   introStart?: number;
   introEnd?: number;
   skipIntro?: number;
+  skipSegments?: SkipSegment[];
  
   // Series specific
   seasons?: Season[];

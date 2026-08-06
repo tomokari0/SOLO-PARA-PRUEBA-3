@@ -133,7 +133,7 @@ const ShakaPlayer: React.FC<ShakaPlayerProps> = ({ src, className, onClose, vide
             label={sub.label}
             src={sub.src}
             kind="subtitles"
-            srcLang={sub.label.substring(0, 2).toLowerCase()}
+            srcLang="es"
           />
         ))}
       </video>

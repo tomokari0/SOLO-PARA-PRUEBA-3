@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { db } from './firebaseConfig';
 import { collection, addDoc, serverTimestamp as firestoreTimestamp, getDocs, query, where, orderBy, deleteDoc, doc, getDoc, setDoc } from "firebase/firestore";
-import { Content, Season } from './types';
+import { Content, Season, SkipSegment } from './types';
 import { LANGUAGES } from './constants';
 import Uploader from './Uploader';
 import SeikoMediaEngine from './src/components/SeikoMediaEngine';
@@ -21,6 +21,34 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const [selectedSeasonId, setSelectedSeasonId] = useState('');
     const [showPreview, setShowPreview] = useState(false);
     const [subtitles, setSubtitles] = useState<{ label: string; src: string }[]>([]);
+    const [skipSegments, setSkipSegments] = useState<SkipSegment[]>([]);
+
+    const formatSecondsToTime = (totalSeconds: number): string => {
+        if (isNaN(totalSeconds) || totalSeconds < 0) return '0:00';
+        const mins = Math.floor(totalSeconds / 60);
+        const secs = Math.floor(totalSeconds % 60);
+        return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    };
+
+    const parseTimeToSeconds = (timeStr: string | number): number => {
+        if (typeof timeStr === 'number') return timeStr;
+        if (!timeStr) return 0;
+        const str = String(timeStr).trim();
+        if (str.includes(':')) {
+            const parts = str.split(':');
+            if (parts.length === 2) {
+                const m = parseInt(parts[0], 10) || 0;
+                const s = parseInt(parts[1], 10) || 0;
+                return m * 60 + s;
+            } else if (parts.length === 3) {
+                const h = parseInt(parts[0], 10) || 0;
+                const m = parseInt(parts[1], 10) || 0;
+                const s = parseInt(parts[2], 10) || 0;
+                return h * 3600 + m * 60 + s;
+            }
+        }
+        return parseFloat(str) || 0;
+    };
     
     // AI Subtitles Generator States
     const [aiGeneratingSubtitles, setAiGeneratingSubtitles] = useState(false);
@@ -304,6 +332,14 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     };
                 });
 
+            const formattedSkipSegments = skipSegments
+                .map(s => ({
+                    label: s.label.trim() || 'Omitir intro',
+                    start: Number(s.start) || 0,
+                    end: Number(s.end) || 0
+                }))
+                .filter(s => s.end > s.start);
+
             if (type === 'episode') {
                 if (!selectedSeriesId) throw new Error("Debes seleccionar una serie");
                 if (!selectedSeasonId) throw new Error("Debes seleccionar una temporada");
@@ -319,7 +355,8 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     audioTracks: newAudioTracksArray,
                     episodeNumber: Number(formData.episodeNumber),
                     duration: formData.duration,
-                    skipIntro: Number(formData.skipIntro),
+                    skipIntro: formattedSkipSegments.length > 0 ? formattedSkipSegments[0].end : Number(formData.skipIntro),
+                    skipSegments: formattedSkipSegments,
                     createdAt: firestoreTimestamp(),
                     titleLogoUrl: formData.titleLogoUrl || "",
                     subtitles: subtitles.filter(sub => sub.label.trim() && sub.src.trim())
@@ -352,7 +389,8 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     rating: formData.rating,
                     featured: formData.featured,
                     status: formData.status,
-                    skipIntro: Number(formData.skipIntro),
+                    skipIntro: formattedSkipSegments.length > 0 ? formattedSkipSegments[0].end : Number(formData.skipIntro),
+                    skipSegments: formattedSkipSegments,
                     createdAt: firestoreTimestamp(),
                     titleLogoUrl: formData.titleLogoUrl || "",
                     subtitles: subtitles.filter(sub => sub.label.trim() && sub.src.trim())
@@ -1124,29 +1162,146 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                         </div>
                     )}
 
-                    <div className="flex flex-col gap-2 pt-4 border-t border-white/5">
-                        <label className="text-[10px] text-yellow-500 uppercase font-black tracking-widest flex justify-between items-center">
-                            Final de Intro (Segundos)
-                            <span className="text-[8px] text-gray-500 normal-case font-normal">Marca el segundo exacto donde termina la intro</span>
-                        </label>
-                        <div className="flex gap-2">
-                            <input 
-                                type="number"
-                                className="flex-grow bg-white/5 border border-white/10 p-3 md:p-4 rounded-lg md:rounded-xl text-white focus:border-yellow-500 outline-none transition-all text-sm"
-                                value={formData.skipIntro}
-                                onChange={e => setFormData({...formData, skipIntro: parseInt(e.target.value) || 0})}
-                            />
-                            <button 
+                    <div className="flex flex-col gap-3 pt-4 border-t border-white/10 text-left">
+                        <div className="flex items-center justify-between">
+                            <label className="text-[10px] text-yellow-500 uppercase font-black tracking-widest flex items-center gap-2">
+                                <span>⚡ Momentos a Omitir (Intro, Intermedio, Ending...)</span>
+                            </label>
+                            <button
                                 type="button"
-                                onClick={() => {
-                                    const currentTime = (window as any).seikotv_current_time || 0;
-                                    setFormData({...formData, skipIntro: Math.floor(currentTime)});
-                                }}
-                                className="bg-yellow-600/20 hover:bg-yellow-600 text-yellow-500 hover:text-white px-4 rounded-lg md:rounded-xl text-[10px] font-bold uppercase tracking-widest transition-all border border-yellow-600/30 whitespace-nowrap"
+                                onClick={() => setSkipSegments([...skipSegments, { label: 'Omitir intro', start: 72, end: 99 }])}
+                                className="bg-yellow-600/20 hover:bg-yellow-600 text-yellow-400 hover:text-white px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all border border-yellow-600/30 flex items-center gap-1 cursor-pointer"
                             >
-                                Marcar aquí
+                                + Añadir Momento
                             </button>
                         </div>
+                        
+                        {skipSegments.length === 0 ? (
+                            <div className="bg-white/5 border border-dashed border-white/10 p-4 rounded-xl text-center flex flex-col items-center gap-2">
+                                <p className="text-xs text-gray-400 italic">No se han añadido momentos específicos para omitir.</p>
+                                <button
+                                    type="button"
+                                    onClick={() => setSkipSegments([
+                                        { label: 'Omitir intro', start: 72, end: 99 },
+                                        { label: 'Omitir intermedio', start: 241, end: 290 }
+                                    ])}
+                                    className="text-[10px] text-yellow-500 hover:underline font-semibold"
+                                >
+                                    + Insertar ejemplos (Intro + Intermedio)
+                                </button>
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                {skipSegments.map((seg, idx) => (
+                                    <div key={idx} className="bg-white/5 border border-white/10 p-3 rounded-xl flex flex-col gap-2.5">
+                                        <div className="flex items-center gap-2">
+                                            <select
+                                                value={['Omitir intro', 'Omitir intermedio', 'Omitir ending', 'Omitir resumen'].includes(seg.label) ? seg.label : 'custom'}
+                                                onChange={(e) => {
+                                                    const val = e.target.value;
+                                                    const newLabel = val === 'custom' ? 'Omitir segmento' : val;
+                                                    const updated = [...skipSegments];
+                                                    updated[idx].label = newLabel;
+                                                    setSkipSegments(updated);
+                                                }}
+                                                className="bg-[#1a1a1a] border border-white/10 p-2 rounded-lg text-xs text-white outline-none focus:border-yellow-500"
+                                            >
+                                                <option value="Omitir intro">Omitir intro</option>
+                                                <option value="Omitir intermedio">Omitir intermedio</option>
+                                                <option value="Omitir ending">Omitir ending</option>
+                                                <option value="Omitir resumen">Omitir resumen</option>
+                                                <option value="custom">Personalizado...</option>
+                                            </select>
+                                            <input
+                                                type="text"
+                                                value={seg.label}
+                                                onChange={(e) => {
+                                                    const updated = [...skipSegments];
+                                                    updated[idx].label = e.target.value;
+                                                    setSkipSegments(updated);
+                                                }}
+                                                placeholder="Ej. Omitir intro"
+                                                className="flex-grow bg-[#1a1a1a] border border-white/10 p-2 rounded-lg text-xs text-white outline-none focus:border-yellow-500 font-semibold"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={() => setSkipSegments(skipSegments.filter((_, i) => i !== idx))}
+                                                className="text-gray-500 hover:text-red-400 p-2 transition-colors text-sm font-bold"
+                                                title="Eliminar"
+                                            >
+                                                ✕
+                                            </button>
+                                        </div>
+
+                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs items-center">
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-[9px] text-gray-400 uppercase tracking-wider">Inicio (MM:SS)</span>
+                                                <div className="flex gap-1">
+                                                    <input
+                                                        type="text"
+                                                        value={formatSecondsToTime(seg.start)}
+                                                        onChange={(e) => {
+                                                            const updated = [...skipSegments];
+                                                            updated[idx].start = parseTimeToSeconds(e.target.value);
+                                                            setSkipSegments(updated);
+                                                        }}
+                                                        className="w-full bg-[#1a1a1a] border border-white/10 p-2 rounded-lg text-white font-mono text-center outline-none focus:border-yellow-500 text-xs"
+                                                        placeholder="1:12"
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            const cur = (window as any).seikotv_current_time || 0;
+                                                            const updated = [...skipSegments];
+                                                            updated[idx].start = Math.floor(cur);
+                                                            setSkipSegments(updated);
+                                                        }}
+                                                        className="bg-yellow-600/30 hover:bg-yellow-600 text-yellow-300 hover:text-white px-2 rounded text-[9px] font-bold tracking-tighter"
+                                                        title="Usar tiempo actual del reproductor"
+                                                    >
+                                                        📍
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex flex-col gap-1">
+                                                <span className="text-[9px] text-gray-400 uppercase tracking-wider">Fin (MM:SS)</span>
+                                                <div className="flex gap-1">
+                                                    <input
+                                                        type="text"
+                                                        value={formatSecondsToTime(seg.end)}
+                                                        onChange={(e) => {
+                                                            const updated = [...skipSegments];
+                                                            updated[idx].end = parseTimeToSeconds(e.target.value);
+                                                            setSkipSegments(updated);
+                                                        }}
+                                                        className="w-full bg-[#1a1a1a] border border-white/10 p-2 rounded-lg text-white font-mono text-center outline-none focus:border-yellow-500 text-xs"
+                                                        placeholder="1:39"
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            const cur = (window as any).seikotv_current_time || 0;
+                                                            const updated = [...skipSegments];
+                                                            updated[idx].end = Math.floor(cur);
+                                                            setSkipSegments(updated);
+                                                        }}
+                                                        className="bg-yellow-600/30 hover:bg-yellow-600 text-yellow-300 hover:text-white px-2 rounded text-[9px] font-bold tracking-tighter"
+                                                        title="Usar tiempo actual del reproductor"
+                                                    >
+                                                        📍
+                                                    </button>
+                                                </div>
+                                            </div>
+
+                                            <div className="col-span-2 flex items-center justify-end text-[11px] text-gray-300 font-medium pt-2 md:pt-0">
+                                                En pantalla: <span className="font-bold ml-1.5 text-yellow-400 bg-yellow-500/10 px-2 py-0.5 rounded border border-yellow-500/20">{formatSecondsToTime(seg.start)} - {formatSecondsToTime(seg.end)} {seg.label}</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
 
                     {canUploadLogo && (type === 'movie' || type === 'series' || type === 'episode') && (

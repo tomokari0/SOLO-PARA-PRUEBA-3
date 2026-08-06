@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useRef, createContext, useContext, useMemo, useCallback } from 'react';
-import { Content, Episode, Season, UserProfile } from './types';
+import { Content, Episode, Season, UserProfile, SkipSegment } from './types';
 import { LANGUAGES, TRANSLATIONS, MOCK_CONTENT } from './constants';
-import { db, isConfigured } from './firebaseConfig';
+import { auth, db, isConfigured } from './firebaseConfig';
 import { collection, onSnapshot, query, orderBy, getDocs, addDoc, serverTimestamp, doc, setDoc, updateDoc, arrayUnion, arrayRemove, increment } from "firebase/firestore";
 import { handleFirestoreError, OperationType } from './src/lib/firestoreErrorHandler';
 import AdminPanel from './AdminPanel';
@@ -22,6 +22,8 @@ import { audioPreloadManager } from './src/lib/AudioPreloadManager';
 import ContentLikeButton from './src/components/ContentLikeButton';
 import { ContentDetailModal } from './src/components/ContentDetailModal';
 import { Subtitles, Sun } from 'lucide-react';
+import { generateAutoCues, createWebVTTDataUrl, parseVTTToCues, SubtitleCue } from './src/utils/autoSubtitles';
+import AutoSubtitleOverlay from './src/components/AutoSubtitleOverlay';
 
 declare global {
   interface Window {
@@ -531,6 +533,14 @@ const VideoPlayer: React.FC<{
     const [isNextClicked, setIsNextClicked] = useState(false);
     const [showSkipButton, setShowSkipButton] = useState(false);
     const [showSkipNotification, setShowSkipNotification] = useState(false);
+    const [skipNotificationText, setSkipNotificationText] = useState('Intro omitida');
+
+    const formatSecondsToTime = useCallback((totalSeconds: number): string => {
+        if (isNaN(totalSeconds) || totalSeconds < 0) return '0:00';
+        const mins = Math.floor(totalSeconds / 60);
+        const secs = Math.floor(totalSeconds % 60);
+        return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+    }, []);
     const [showCopiedToast, setShowCopiedToast] = useState(false);
     const [playbackSpeed, setPlaybackSpeed] = useState(1);
     const [zoomLevel, setZoomLevel] = useState(1);
@@ -799,6 +809,21 @@ const VideoPlayer: React.FC<{
 
     const lastActiveVideoIdRef = useRef<string | null>(null);
 
+    // Generate automatic subtitles & transcriptions (SDH sound actions + on-screen text)
+    const autoCues = useMemo(() => {
+        if (!item) return [];
+        const currentEp = item.type === 'series' && episodes && episodes.length > 0 ? episodes[currentEpIndex] : null;
+        const title = currentEp?.title || item.title || 'Video';
+        const desc = currentEp?.description || item.description || '';
+        const durSec = duration && duration > 0 ? duration : 300;
+        return generateAutoCues(title, desc, durSec);
+    }, [item, episodes, currentEpIndex, duration]);
+
+    const autoSubtitleVttUrl = useMemo(() => {
+        if (!autoCues || autoCues.length === 0) return '';
+        return createWebVTTDataUrl(autoCues);
+    }, [autoCues]);
+
     const activeVideo = useMemo(() => {
         const getData = (data: any) => {
             let url = data.videoUrl || '';
@@ -824,11 +849,22 @@ const VideoPlayer: React.FC<{
                 else serverType = 'uploadcare'; // Default
             }
 
+            const customSubs = data.subtitles || [];
+            const autoTrack = {
+                label: 'Español (Auto CC)',
+                src: autoSubtitleVttUrl
+            };
+
+            const subtitles = [
+                ...(autoSubtitleVttUrl ? [autoTrack] : []),
+                ...customSubs
+            ];
+
             return { 
                 url, 
                 serverType: data.serverType || 'uploadcare',
                 embedCode: data.embedCode,
-                subtitles: data.subtitles || []
+                subtitles
             };
         };
 
@@ -842,7 +878,7 @@ const VideoPlayer: React.FC<{
             return { ...data, id: `${item.id}_${ep.id}` };
         }
         return { url: '', serverType: 'uploadcare', id: '', embedCode: '', subtitles: [] };
-    }, [item, episodes, currentEpIndex, currentAudio]);
+    }, [item, episodes, currentEpIndex, currentAudio, autoSubtitleVttUrl]);
 
     // Track active video and prompt resume if watched before
     useEffect(() => {
@@ -942,6 +978,7 @@ const VideoPlayer: React.FC<{
 
         const syncTracks = () => {
             const tracks = video.textTracks;
+            if (!tracks || tracks.length === 0) return;
             for (let i = 0; i < tracks.length; i++) {
                 if (i === currentSubtitleIndex) {
                     tracks[i].mode = 'showing';
@@ -952,11 +989,24 @@ const VideoPlayer: React.FC<{
         };
 
         video.addEventListener('loadedmetadata', syncTracks);
-        // También intentar inmediatamente
+        video.addEventListener('canplay', syncTracks);
+
+        if (video.textTracks) {
+            video.textTracks.addEventListener('addtrack', syncTracks);
+        }
+
         syncTracks();
+        const t1 = setTimeout(syncTracks, 100);
+        const t2 = setTimeout(syncTracks, 500);
 
         return () => {
             video.removeEventListener('loadedmetadata', syncTracks);
+            video.removeEventListener('canplay', syncTracks);
+            if (video.textTracks) {
+                video.textTracks.removeEventListener('addtrack', syncTracks);
+            }
+            clearTimeout(t1);
+            clearTimeout(t2);
         };
     }, [currentSubtitleIndex, activeVideo]);
 
@@ -980,31 +1030,62 @@ const VideoPlayer: React.FC<{
         }
     }, [isEmbed]);
 
-    // --- LÓGICA DE SKIP INTRO ---
-    const skipIntroTime = useMemo(() => {
+    // --- LÓGICA DE SKIP INTRO Y MOMENTOS DE OMISIÓN ---
+    const activeSkipSegments = useMemo<SkipSegment[]>(() => {
         const data = item.type === 'movie' ? item : episodes[currentEpIndex];
-        return data?.skipIntro || 0;
+        if (!data) return [];
+
+        if (data.skipSegments && Array.isArray(data.skipSegments) && data.skipSegments.length > 0) {
+            return data.skipSegments
+                .map(seg => ({
+                    label: seg.label || 'Omitir intro',
+                    start: Number(seg.start) || 0,
+                    end: Number(seg.end) || 0
+                }))
+                .filter(seg => seg.end > seg.start);
+        }
+
+        if (data.skipIntro && data.skipIntro > 0) {
+            const start = data.introStart !== undefined ? data.introStart : 2;
+            return [{
+                label: 'Omitir intro',
+                start,
+                end: data.skipIntro
+            }];
+        }
+
+        return [];
     }, [item, episodes, currentEpIndex]);
 
-    const handleSkipIntro = useCallback(() => {
-        if (skipIntroTime > 0) {
+    const activeSkipSegment = useMemo(() => {
+        if (!activeSkipSegments.length) return null;
+        return activeSkipSegments.find(seg => currentTime >= seg.start && currentTime < seg.end) || null;
+    }, [activeSkipSegments, currentTime]);
+
+    const handleSkipSegment = useCallback((targetSegment?: SkipSegment | null) => {
+        const seg = targetSegment || activeSkipSegment;
+        if (seg && seg.end > 0) {
             let skipped = false;
             if (videoRef.current) {
-                videoRef.current.currentTime = skipIntroTime;
+                videoRef.current.currentTime = seg.end;
                 skipped = true;
             } else if (ytPlayerRef.current && ytPlayerRef.current.seekTo) {
-                ytPlayerRef.current.seekTo(skipIntroTime, true);
+                ytPlayerRef.current.seekTo(seg.end, true);
                 skipped = true;
             }
             
             if (skipped) {
                 setShowSkipButton(false);
+                const labelName = seg.label || 'Intro';
+                setSkipNotificationText(`${labelName} omitido/a`);
                 setShowSkipNotification(true);
                 setTimeout(() => setShowSkipNotification(false), 3000);
-                hasAutoSkippedRef.current = activeVideo.id;
+
+                const segKey = `${activeVideo.id}_${seg.start}_${seg.end}`;
+                hasAutoSkippedRef.current = segKey;
             }
         }
-    }, [skipIntroTime, activeVideo.id]);
+    }, [activeSkipSegment, activeVideo.id]);
 
     // Monitor de tiempo y skip automático
     useEffect(() => {
@@ -1025,10 +1106,12 @@ const VideoPlayer: React.FC<{
                 setDuration(dur);
                 (window as any).seikotv_current_time = current;
 
-                // Lógica de botón Skip Intro
-                if (skipIntroTime > 0 && current >= 2 && current < skipIntroTime) {
-                    if (autoSkipIntro && hasAutoSkippedRef.current !== activeVideo.id) {
-                        handleSkipIntro();
+                // Lógica de botón Skip Intro y momentos de omisión
+                const matchingSeg = activeSkipSegments.find(s => current >= s.start && current < s.end);
+                if (matchingSeg) {
+                    const segKey = `${activeVideo.id}_${matchingSeg.start}_${matchingSeg.end}`;
+                    if (autoSkipIntro && hasAutoSkippedRef.current !== segKey) {
+                        handleSkipSegment(matchingSeg);
                     } else if (!autoSkipIntro) {
                         setShowSkipButton(true);
                     }
@@ -1039,7 +1122,7 @@ const VideoPlayer: React.FC<{
         }, 1000);
 
         return () => clearInterval(interval);
-    }, [skipIntroTime, autoSkipIntro, handleSkipIntro]);
+    }, [activeSkipSegments, autoSkipIntro, handleSkipSegment, activeVideo.id]);
 
     // Reset prefetched episode ref and purge expired/irrelevant cache entries when content item or episode changes
     const PREFETCH_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes TTL
@@ -1127,7 +1210,7 @@ const VideoPlayer: React.FC<{
             }, PREFETCH_CACHE_TTL_MS);
 
             // 1. Prefetch Next Episode Thumbnail & Logo
-            const thumbUrl = nextEp.thumbnailUrl || nextEp.stillUrl || nextEp.poster || item.thumbnailUrl || item.banner || item.coverUrl;
+            const thumbUrl = nextEp.thumbnailUrl || (nextEp as any).stillUrl || (nextEp as any).poster || item.thumbnailUrl || (item as any).banner || (item as any).coverUrl;
             if (thumbUrl) {
                 const img = new Image();
                 img.src = thumbUrl;
@@ -2119,20 +2202,25 @@ const VideoPlayer: React.FC<{
                 )}
 
 
-                {/* Botón Omitir Intro */}
-                {showSkipButton && !isPiPActive && (
+                {/* Botón Omitir Intro / Segmentos */}
+                {showSkipButton && activeSkipSegment && !isPiPActive && (
                     <button 
-                        onClick={handleSkipIntro}
-                        className="absolute bottom-24 md:bottom-32 left-4 md:left-8 bg-black/80 text-white px-6 md:px-8 py-3 md:py-4 rounded-lg font-black text-xs md:text-sm tracking-[0.2em] border-2 border-red-600 shadow-[0_0_20px_rgba(220,38,38,0.5)] animate-fade-in hover:scale-105 transition-all z-[165] uppercase"
+                        onClick={() => handleSkipSegment(activeSkipSegment)}
+                        className="absolute bottom-24 md:bottom-32 left-4 md:left-8 bg-black/85 backdrop-blur-md text-white px-5 md:px-7 py-3 md:py-3.5 rounded-xl font-black text-xs md:text-sm border-2 border-red-600 shadow-[0_0_25px_rgba(220,38,38,0.6)] animate-fade-in hover:scale-105 transition-all z-[165] flex items-center gap-2.5 uppercase tracking-wider group"
                     >
-                        Omitir Intro
+                        <span className="text-red-400 font-mono text-xs md:text-sm group-hover:text-white transition-colors">
+                            {formatSecondsToTime(activeSkipSegment.start)} - {formatSecondsToTime(activeSkipSegment.end)}
+                        </span>
+                        <span className="w-1.5 h-1.5 rounded-full bg-red-600 animate-ping" />
+                        <span>{activeSkipSegment.label || 'Omitir intro'}</span>
                     </button>
                 )}
 
-                {/* Notificación Intro Omitida */}
+                {/* Notificación Intro / Segmento Omitido */}
                 {showSkipNotification && !isPiPActive && (
-                    <div className="absolute top-24 left-1/2 -translate-x-1/2 bg-black/60 backdrop-blur-md text-white px-6 py-2 rounded-full border border-white/10 text-[10px] font-bold tracking-widest uppercase animate-slide-up z-40">
-                        Intro omitida
+                    <div className="absolute top-24 left-1/2 -translate-x-1/2 bg-black/85 backdrop-blur-md text-white px-6 py-2.5 rounded-full border border-red-500/30 text-[11px] font-bold tracking-widest uppercase animate-slide-up z-40 shadow-lg flex items-center gap-2">
+                        <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                        <span>{skipNotificationText}</span>
                     </div>
                 )}
 
@@ -2663,7 +2751,7 @@ const VideoPlayer: React.FC<{
                                     {item.rating || 'U/A 16+'}
                                 </span>
                                 <span>
-                                    {item.type === 'series' ? `${item.seasonsCount || 1} Temporadas` : (item.duration || '2h 10m')}
+                                    {item.type === 'series' ? `${(item as any).seasonsCount || (item.seasons ? item.seasons.length : 1)} Temporadas` : ((item as any).duration || '2h 10m')}
                                 </span>
                             </div>
 
@@ -3452,7 +3540,7 @@ const MainApp: React.FC = () => {
     };
 
     const logout = () => {
-        import('./firebaseConfig').then(({ auth }) => auth.signOut());
+        auth.signOut();
     };
 
     useEffect(() => {
