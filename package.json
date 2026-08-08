@@ -12,6 +12,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1093.0",
     "@aws-sdk/s3-request-presigner": "^3.1093.0",
+    "@distube/ytdl-core": "^4.16.12",
     "@google/genai": "^1.28.0",
     "@uploadcare/react-uploader": "^1.13.0",
     "dotenv": "^17.4.2",

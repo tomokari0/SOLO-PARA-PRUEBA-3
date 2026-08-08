@@ -18,8 +18,46 @@ export default function Uploader({
     const [uploading, setUploading] = useState(false);
     const [statusMsg, setStatusMsg] = useState<string | null>(null);
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
-    const [uploadProvider, setUploadProvider] = useState<'r2' | 'uploadcare'>('r2');
+    const [uploadProvider, setUploadProvider] = useState<'r2' | 'uploadcare' | 'youtube'>('r2');
+    const [youtubeUrlInput, setYoutubeUrlInput] = useState('');
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    const handleYouTubeToR2 = async () => {
+        const urlToProcess = youtubeUrlInput.trim();
+        if (!urlToProcess) {
+            setErrorMsg("Ingresa un enlace de YouTube o video válido.");
+            return;
+        }
+
+        setUploading(true);
+        setErrorMsg(null);
+        setStatusMsg("Descargando video de YouTube e importando a Cloudflare R2...");
+
+        try {
+            const res = await fetch("/api/upload/youtube-to-r2", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: urlToProcess, folder }),
+            });
+
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error || "No se pudo procesar el video de YouTube.");
+            }
+
+            setStatusMsg(`¡Éxito! Video guardado en R2: ${data.url}`);
+            if (onUploadSuccess) {
+                onUploadSuccess(data.url);
+            }
+            setYoutubeUrlInput('');
+        } catch (err: any) {
+            console.error("Error al convertir YouTube a R2:", err);
+            setErrorMsg(err.message || "Error al procesar la descarga de YouTube.");
+            setStatusMsg(null);
+        } finally {
+            setUploading(false);
+        }
+    };
 
     const handleR2FileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -169,6 +207,36 @@ export default function Uploader({
                     </div>
                 )}
 
+                {/* YouTube to R2 Auto-Downloader */}
+                {uploadProvider === 'youtube' && (
+                    <div className="flex items-center gap-2 bg-red-950/20 border border-red-600/30 p-1.5 rounded-xl">
+                        <input
+                            type="url"
+                            value={youtubeUrlInput}
+                            onChange={(e) => setYoutubeUrlInput(e.target.value)}
+                            placeholder="Pegar enlace de YouTube..."
+                            className="bg-black/50 border border-white/10 text-white text-xs px-2.5 py-1.5 rounded-lg outline-none focus:border-red-500 w-48 sm:w-64"
+                        />
+                        <button
+                            type="button"
+                            disabled={uploading}
+                            onClick={handleYouTubeToR2}
+                            className="bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-bold text-xs px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 shadow-md shadow-red-600/30 shrink-0"
+                        >
+                            {uploading ? (
+                                <>
+                                    <span className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin shrink-0" />
+                                    <span>Importando a R2...</span>
+                                </>
+                            ) : (
+                                <>
+                                    <span>⚡ Guardar en R2</span>
+                                </>
+                            )}
+                        </button>
+                    </div>
+                )}
+
                 {/* Uploadcare fallback component */}
                 {uploadProvider === 'uploadcare' && (
                     <div className="uc-light uc-purple">
@@ -183,15 +251,39 @@ export default function Uploader({
                     </div>
                 )}
 
-                {/* Toggle provider button */}
-                <button
-                    type="button"
-                    onClick={() => setUploadProvider(p => p === 'r2' ? 'uploadcare' : 'r2')}
-                    className="text-[10px] text-gray-400 hover:text-white underline px-1 py-1"
-                    title="Cambiar proveedor de almacenamiento (Cloudflare R2 / Uploadcare)"
-                >
-                    {uploadProvider === 'r2' ? 'Usar Uploadcare' : 'Usar Cloudflare R2'}
-                </button>
+                {/* Mode Selectors */}
+                <div className="flex items-center gap-1.5">
+                    {uploadProvider !== 'youtube' && (
+                        <button
+                            type="button"
+                            onClick={() => setUploadProvider('youtube')}
+                            className="text-[10px] bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-600/30 px-2 py-1 rounded-lg transition-all font-bold flex items-center gap-1"
+                            title="Descargar desde enlace de YouTube y subir a Cloudflare R2 automáticamente"
+                        >
+                            <span>⚡</span> YouTube a R2
+                        </button>
+                    )}
+                    {uploadProvider !== 'r2' && (
+                        <button
+                            type="button"
+                            onClick={() => setUploadProvider('r2')}
+                            className="text-[10px] bg-orange-600/20 hover:bg-orange-600/30 text-orange-400 border border-orange-600/30 px-2 py-1 rounded-lg transition-all font-bold"
+                            title="Subir archivo local directamente a Cloudflare R2"
+                        >
+                            Usar R2 Directo
+                        </button>
+                    )}
+                    {uploadProvider !== 'uploadcare' && (
+                        <button
+                            type="button"
+                            onClick={() => setUploadProvider('uploadcare')}
+                            className="text-[10px] text-gray-400 hover:text-white underline px-1 py-1"
+                            title="Cambiar a Uploadcare"
+                        >
+                            Uploadcare
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* Status & Error Feedback */}

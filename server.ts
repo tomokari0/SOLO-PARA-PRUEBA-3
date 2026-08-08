@@ -11,6 +11,7 @@ import { storage } from "./firebaseConfig";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import multer from "multer";
 import { uploadToR2, getR2Config, getPresignedR2Url, parseR2Error, getR2DiagnosticSummary } from "./services/r2Storage";
+import { downloadVideoAndUploadToR2 } from "./services/videoDownloader";
 
 const multerUpload = multer({
   storage: multer.memoryStorage(),
@@ -479,6 +480,37 @@ app.use((req, res, next) => {
   });
 
   // API Route for ImageKit Authentication
+  // Download video from YouTube or external URL and upload to Cloudflare R2
+  app.post(["/api/upload/youtube-to-r2", "/upload/youtube-to-r2"], async (req, res) => {
+    try {
+      const { url, folder } = req.body || {};
+      if (!url || typeof url !== "string") {
+        return res.status(400).json({
+          success: false,
+          error: "Se requiere un parámetro 'url' válido."
+        });
+      }
+
+      console.log(`[YouTube/URL to R2] Processing URL: ${url}`);
+      const result = await downloadVideoAndUploadToR2(url, folder || "youtube-imports");
+
+      console.log(`[YouTube/URL to R2] Successfully uploaded to R2: ${result.url}`);
+      return res.json({
+        success: true,
+        message: "Video descargado y subido a Cloudflare R2 exitosamente",
+        url: result.url,
+        key: result.key,
+        title: result.title
+      });
+    } catch (error: any) {
+      console.error("[YouTube/URL to R2 Error]:", error);
+      return res.status(500).json({
+        success: false,
+        error: error.message || "Error al procesar el video y subirlo a R2."
+      });
+    }
+  });
+
   app.get("/api/imagekit/auth", (req, res) => {
     try {
       console.log("Generating ImageKit auth parameters...");

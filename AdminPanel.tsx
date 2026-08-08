@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { db } from './firebaseConfig';
-import { collection, addDoc, serverTimestamp as firestoreTimestamp, getDocs, query, where, orderBy, deleteDoc, doc, getDoc, setDoc } from "firebase/firestore";
+import { collection, addDoc, serverTimestamp as firestoreTimestamp, getDocs, query, where, orderBy, deleteDoc, doc, getDoc, setDoc, updateDoc } from "firebase/firestore";
 import { Content, Season, SkipSegment } from './types';
 import { LANGUAGES } from './constants';
 import Uploader from './Uploader';
@@ -54,6 +54,37 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
     const [aiGeneratingSubtitles, setAiGeneratingSubtitles] = useState(false);
     const [aiSubtitlesStatus, setAiSubtitlesStatus] = useState('');
     const [aiSuccessList, setAiSuccessList] = useState<string[]>([]);
+    const [convertingYtToR2, setConvertingYtToR2] = useState(false);
+
+    const handleConvertYtToR2 = async () => {
+        const urlToConvert = formData.videoUrl.trim();
+        if (!urlToConvert) {
+            alert("Por favor pega primero un enlace de YouTube en el campo de URL de Video.");
+            return;
+        }
+
+        setConvertingYtToR2(true);
+        try {
+            const res = await fetch("/api/upload/youtube-to-r2", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url: urlToConvert, folder: "videos" })
+            });
+
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error || "No se pudo descargar e importar el video.");
+            }
+
+            setFormData(prev => ({ ...prev, videoUrl: data.url }));
+            alert(`¡Éxito! El video de YouTube fue descargado y subido a R2 automáticamente:\n${data.url}`);
+        } catch (err: any) {
+            console.error("Error al convertir YouTube a R2:", err);
+            alert(`Error: ${err.message || 'No se pudo convertir el video a R2.'}`);
+        } finally {
+            setConvertingYtToR2(false);
+        }
+    };
     
     // Cast members management
     const [allContentList, setAllContentList] = useState<Content[]>([]);
@@ -64,7 +95,8 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         name: '',
         role: '',
         character: '',
-        avatar: ''
+        avatar: '',
+        socialUrl: ''
     });
 
     const [teapotDate, setTeapotDate] = useState('2026-07-25');
@@ -192,6 +224,7 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 role: castForm.role,
                 character: castForm.character || null,
                 avatar: castForm.avatar || null,
+                socialUrl: castForm.socialUrl.trim() || null,
                 createdAt: firestoreTimestamp()
             });
 
@@ -200,7 +233,8 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 name: '',
                 role: '',
                 character: '',
-                avatar: ''
+                avatar: '',
+                socialUrl: ''
             });
 
             // Refetch list
@@ -237,13 +271,19 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         }
     };
 
+    const [taggingEpisodes, setTaggingEpisodes] = useState(false);
+
     useEffect(() => {
         if (type === 'episode' && selectedSeriesId) {
             const fetchSeasons = async () => {
                 const seasonsRef = collection(db, "content", selectedSeriesId, "temporadas");
                 const q = query(seasonsRef, orderBy("seasonNumber", "asc"));
                 const snap = await getDocs(q);
-                setSeasonsList(snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Season)));
+                const seasonsData = snap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Season));
+                setSeasonsList(seasonsData);
+                if (seasonsData.length > 0) {
+                    setSelectedSeasonId(prev => prev || seasonsData[0].id);
+                }
             };
             fetchSeasons();
         } else {
@@ -251,6 +291,55 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             setSelectedSeasonId('');
         }
     }, [type, selectedSeriesId]);
+
+    const handleTagUntaggedEpisodes = async () => {
+        if (!selectedSeriesId) {
+            alert("Selecciona primero una serie.");
+            return;
+        }
+        setTaggingEpisodes(true);
+        try {
+            const seasonsRef = collection(db, "content", selectedSeriesId, "temporadas");
+            const seasonsSnap = await getDocs(seasonsRef);
+            const seasons = seasonsSnap.docs.map(d => ({ id: d.id, ...d.data() } as Season));
+
+            const episodesRef = collection(db, "content", selectedSeriesId, "episodes");
+            const episodesSnap = await getDocs(episodesRef);
+
+            if (episodesSnap.empty) {
+                alert("Esta serie no tiene episodios registrados.");
+                return;
+            }
+
+            let updatedCount = 0;
+            for (const epDoc of episodesSnap.docs) {
+                const epData = epDoc.data();
+                if (!epData.seasonId || epData.seasonNumber === undefined || epData.seasonNumber === null) {
+                    let targetSeason = seasons.find(s => s.id === epData.seasonId);
+                    if (!targetSeason && seasons.length > 0) {
+                        targetSeason = seasons[0];
+                    }
+                    const sNum = targetSeason ? Number(targetSeason.seasonNumber) : 1;
+                    const sId = targetSeason ? targetSeason.id : (selectedSeasonId || "default_season");
+                    const sTitle = targetSeason?.title || `Temporada ${sNum}`;
+
+                    await updateDoc(doc(db, "content", selectedSeriesId, "episodes", epDoc.id), {
+                        seasonId: sId,
+                        seasonNumber: sNum,
+                        seasonTitle: sTitle
+                    });
+                    updatedCount++;
+                }
+            }
+
+            alert(`¡Completado! Se etiquetaron ${updatedCount} episodio(s) en Firebase con su correspondiente temporada. 🎉`);
+        } catch (err: any) {
+            console.error("Error tagging episodes:", err);
+            alert("Error al etiquetar episodios: " + err.message);
+        } finally {
+            setTaggingEpisodes(false);
+        }
+    };
 
     const handleGenerateAISubtitles = async () => {
         if (!formData.title) {
@@ -344,7 +433,10 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 if (!selectedSeriesId) throw new Error("Debes seleccionar una serie");
                 if (!selectedSeasonId) throw new Error("Debes seleccionar una temporada");
                 
-                const episodesRef = collection(db, "content", selectedSeriesId, "episodes"); // Updated path as per user request
+                const selectedSeason = seasonsList.find(s => s.id === selectedSeasonId);
+                const seasonNum = selectedSeason?.seasonNumber ? Number(selectedSeason.seasonNumber) : (Number(formData.seasonNumber) || 1);
+
+                const episodesRef = collection(db, "content", selectedSeriesId, "episodes");
                 await addDoc(episodesRef, {
                     title: formData.title,
                     description: formData.description,
@@ -354,6 +446,9 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     serverType: formData.serverType,
                     audioTracks: newAudioTracksArray,
                     episodeNumber: Number(formData.episodeNumber),
+                    seasonId: selectedSeasonId,
+                    seasonNumber: seasonNum,
+                    seasonTitle: selectedSeason?.title || `Temporada ${seasonNum}`,
                     duration: formData.duration,
                     skipIntro: formattedSkipSegments.length > 0 ? formattedSkipSegments[0].end : Number(formData.skipIntro),
                     skipSegments: formattedSkipSegments,
@@ -361,7 +456,7 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                     titleLogoUrl: formData.titleLogoUrl || "",
                     subtitles: subtitles.filter(sub => sub.label.trim() && sub.src.trim())
                 });
-                alert("¡Episodio añadido con éxito! 🎬");
+                alert(`¡Episodio añadido con éxito! 🎬 (Guardado en Temporada ${seasonNum})`);
             } else if (type === 'season') {
                 if (!selectedSeriesId) throw new Error("Debes seleccionar una serie");
                 
@@ -615,6 +710,19 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                         </div>
                                     </div>
 
+                                    <div className="flex flex-col gap-1.5 font-sans">
+                                        <label className="text-[10px] text-gray-500 uppercase font-black tracking-widest flex items-center gap-1.5">
+                                            <span>🔗 Red Social / Enlace (Opcional)</span>
+                                        </label>
+                                        <input 
+                                            className="bg-white/5 border border-white/10 p-3 rounded-lg text-white focus:border-red-600 outline-none text-xs"
+                                            value={castForm.socialUrl}
+                                            onChange={e => setCastForm({...castForm, socialUrl: e.target.value})}
+                                            placeholder="ej: https://instagram.com/usuario o https://youtube.com/@canal"
+                                        />
+                                        <span className="text-[9px] text-gray-500 italic">Al presionar su nombre en los créditos, redirigirá a este enlace.</span>
+                                    </div>
+
                                     <button
                                         type="button"
                                         onClick={handleAddCastMember}
@@ -651,6 +759,16 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                                         <p className="text-[10px] text-gray-500 truncate">
                                                             {member.role} {member.character && `(como ${member.character})`}
                                                         </p>
+                                                        {member.socialUrl && (
+                                                            <a
+                                                                href={member.socialUrl.startsWith('http') ? member.socialUrl : `https://${member.socialUrl}`}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="text-[10px] text-red-400 hover:underline block truncate font-mono mt-0.5"
+                                                            >
+                                                                🔗 {member.socialUrl}
+                                                            </a>
+                                                        )}
                                                     </div>
                                                     <button
                                                         type="button"
@@ -701,7 +819,18 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 
                 {type === 'episode' && selectedSeriesId && (
                     <div className="flex flex-col gap-2 animate-fade-in mb-4 md:mb-6">
-                        <label className="text-[10px] text-red-500 uppercase font-black tracking-widest">Seleccionar Temporada</label>
+                        <div className="flex justify-between items-center flex-wrap gap-2">
+                            <label className="text-[10px] text-red-500 uppercase font-black tracking-widest">Seleccionar Temporada</label>
+                            <button
+                                type="button"
+                                onClick={handleTagUntaggedEpisodes}
+                                disabled={taggingEpisodes}
+                                className="text-[10px] bg-red-600/20 hover:bg-red-600/30 text-red-300 font-bold px-2.5 py-1 rounded border border-red-500/30 transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                                title="Vincular episodios antiguos sin etiqueta de temporada en Firebase"
+                            >
+                                🏷️ {taggingEpisodes ? 'Etiquetando...' : 'Etiquetar episodios antiguos en Firebase'}
+                            </button>
+                        </div>
                         <select 
                             className="bg-white/5 border border-white/10 p-3 md:p-4 rounded-lg md:rounded-xl text-white outline-none focus:border-red-600 text-sm"
                             value={selectedSeasonId}
@@ -917,14 +1046,34 @@ const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                                                             required={formData.serverType === 'embed'}
                                                         />
                                                     ) : (
-                                                        <div className="flex gap-2 items-center">
+                                                        <div className="flex flex-col sm:flex-row gap-2 items-stretch sm:items-center">
                                                             <input 
                                                                 className="flex-grow bg-[#1a1a1a] border border-white/10 p-4 rounded-xl text-white focus:border-red-600 focus:ring-1 focus:ring-red-600/50 outline-none transition-all text-xs placeholder:text-gray-600 shadow-inner"
                                                                 value={formData.videoUrl}
                                                                 onChange={e => setFormData({...formData, videoUrl: e.target.value})}
-                                                                placeholder={formData.serverType === 'uploadcare' ? "Ej: https://ucarecdn.com/..." : "Ej: https://... (R2 / Servidor)"}
+                                                                placeholder={formData.serverType === 'uploadcare' ? "Ej: https://ucarecdn.com/..." : "Ej: https://youtube.com/watch?v=... o https://... (R2 / Servidor)"}
                                                                 required={type === 'episode'}
                                                             />
+                                                            {formData.videoUrl.trim() && (formData.videoUrl.includes('youtube.com') || formData.videoUrl.includes('youtu.be')) && (
+                                                                <button
+                                                                    type="button"
+                                                                    disabled={convertingYtToR2}
+                                                                    onClick={handleConvertYtToR2}
+                                                                    className="bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white font-bold text-xs px-4 py-3 rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-red-600/30 shrink-0 uppercase tracking-wider"
+                                                                    title="Descargar video de YouTube y subirlo a Cloudflare R2 automáticamente"
+                                                                >
+                                                                    {convertingYtToR2 ? (
+                                                                        <>
+                                                                            <span className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                                                            <span>Importando a R2...</span>
+                                                                        </>
+                                                                    ) : (
+                                                                        <>
+                                                                            <span>⚡ Convertir YouTube a R2</span>
+                                                                        </>
+                                                                    )}
+                                                                </button>
+                                                            )}
                                                             <Uploader 
                                                                 accept="video/*,audio/*" 
                                                                 folder="videos" 

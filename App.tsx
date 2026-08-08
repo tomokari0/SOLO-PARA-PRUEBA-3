@@ -724,7 +724,7 @@ const VideoPlayer: React.FC<{
     }, [stopAccelerating]);
 
     const [activeTab, setActiveTab] = useState<'episodes' | 'cast' | 'info'>('episodes');
-    const [cast, setCast] = useState<{ id: string; name: string; role: string; character?: string; avatar?: string; }[]>([]);
+    const [cast, setCast] = useState<{ id: string; name: string; role: string; character?: string; avatar?: string; socialUrl?: string; socialLink?: string; link?: string; }[]>([]);
     const [loadingCast, setLoadingCast] = useState(false);
 
     // Default active tab based on item type
@@ -771,33 +771,38 @@ const VideoPlayer: React.FC<{
                 name: 'Yuki Dobladora 🎙️',
                 role: 'Voz Principal (Protagonista)',
                 character: 'Yumi',
-                avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200'
+                avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&q=80&w=200',
+                socialUrl: 'https://youtube.com'
             },
             {
                 id: 'p2',
                 name: 'Ken Gacha-Voice 🎙️',
                 role: 'Voz Co-Estelar',
                 character: 'Ren',
-                avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200'
+                avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&q=80&w=200',
+                socialUrl: 'https://instagram.com'
             },
             {
                 id: 'p3',
                 name: 'Miyuki Chann ✨',
                 role: 'Voz de Reparto',
                 character: 'Ami',
-                avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=200'
+                avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?auto=format&fit=crop&q=80&w=200',
+                socialUrl: 'https://x.com'
             },
             {
                 id: 'p4',
                 name: 'Seiko Creator 🎬',
                 role: 'Director, Guionista y Animación Gacha',
-                avatar: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&q=80&w=200'
+                avatar: 'https://images.unsplash.com/photo-1539571696357-5a69c17a67c6?auto=format&fit=crop&q=80&w=200',
+                socialUrl: 'https://youtube.com'
             },
             {
                 id: 'p5',
                 name: 'Sora Edits 💻',
                 role: 'Edición y Efectos Visuales',
-                avatar: 'https://images.unsplash.com/photo-1501196354995-cbb51c65aaea?auto=format&fit=crop&q=80&w=200'
+                avatar: 'https://images.unsplash.com/photo-1501196354995-cbb51c65aaea?auto=format&fit=crop&q=80&w=200',
+                socialUrl: 'https://tiktok.com'
             }
         ];
     };
@@ -1364,15 +1369,35 @@ const VideoPlayer: React.FC<{
             const fetchEpisodes = async () => {
                 setLoading(true);
                 try {
+                    // Cargar temporadas de la serie si existen en Firestore para mapear IDs
+                    const seasonsMap = new Map<string, any>();
+                    try {
+                        const seasonsRef = collection(db, "content", item.id, "temporadas");
+                        const seasonsSnap = await getDocs(query(seasonsRef, orderBy("seasonNumber", "asc")));
+                        seasonsSnap.docs.forEach(d => {
+                            seasonsMap.set(d.id, { id: d.id, ...d.data() });
+                        });
+                    } catch (e) {
+                        console.warn("No se pudieron cargar temporadas de Firestore:", e);
+                    }
+
                     // Consultamos la sub-colección "episodes" del documento de la serie
                     const episodesRef = collection(db, "content", item.id, "episodes");
                     const q = query(episodesRef, orderBy("episodeNumber", "asc"));
                     const querySnapshot = await getDocs(q);
                     
-                    const episodesData = querySnapshot.docs.map(doc => ({
-                        id: doc.id,
-                        ...doc.data()
-                    } as Episode));
+                    const episodesData = querySnapshot.docs.map(doc => {
+                        const data = doc.data();
+                        let sNum = data.seasonNumber;
+                        if ((sNum === undefined || sNum === null) && data.seasonId && seasonsMap.has(data.seasonId)) {
+                            sNum = seasonsMap.get(data.seasonId)?.seasonNumber;
+                        }
+                        return {
+                            id: doc.id,
+                            ...data,
+                            seasonNumber: sNum ? Number(sNum) : 1
+                        } as Episode;
+                    });
 
                     if (episodesData.length > 0) {
                         episodesData.sort((a, b) => {
@@ -1483,52 +1508,56 @@ const VideoPlayer: React.FC<{
     }, []);
 
     // Auto pantalla completa horizontal en móvil al entrar al reproductor
+    const [mobileFullscreenPrompt, setMobileFullscreenPrompt] = useState(false);
+
+    const triggerMobileLandscapeFullscreen = useCallback(async () => {
+        try {
+            if (playerContainerRef.current && !document.fullscreenElement) {
+                if (playerContainerRef.current.requestFullscreen) {
+                    await playerContainerRef.current.requestFullscreen();
+                } else if ((playerContainerRef.current as any).webkitRequestFullscreen) {
+                    await (playerContainerRef.current as any).webkitRequestFullscreen();
+                }
+            } else if (videoRef.current && (videoRef.current as any).webkitEnterFullscreen) {
+                (videoRef.current as any).webkitEnterFullscreen();
+            }
+
+            if (screen.orientation && 'lock' in screen.orientation) {
+                await (screen.orientation as any).lock('landscape').catch(() => {});
+            }
+            setMobileFullscreenPrompt(false);
+        } catch (err) {
+            console.log("Mobile landscape fullscreen error/blocked:", err);
+            setMobileFullscreenPrompt(true);
+        }
+    }, []);
+
     useEffect(() => {
         const isMobile = window.innerWidth <= 768 || /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
         if (!isMobile) return;
 
-        const enterMobileLandscapeFullscreen = async () => {
-            try {
-                if (playerContainerRef.current && !document.fullscreenElement) {
-                    if (playerContainerRef.current.requestFullscreen) {
-                        await playerContainerRef.current.requestFullscreen();
-                    } else if ((playerContainerRef.current as any).webkitRequestFullscreen) {
-                        await (playerContainerRef.current as any).webkitRequestFullscreen();
-                    }
-                } else if (videoRef.current && (videoRef.current as any).webkitEnterFullscreen) {
-                    (videoRef.current as any).webkitEnterFullscreen();
-                }
+        // Try triggering immediately
+        triggerMobileLandscapeFullscreen();
 
-                if (screen.orientation && 'lock' in screen.orientation) {
-                    await (screen.orientation as any).lock('landscape').catch(() => {});
-                }
-            } catch (err) {
-                console.log("Auto mobile landscape fullscreen prevented or unsupported:", err);
-            }
+        const handleUserGesture = () => {
+            triggerMobileLandscapeFullscreen();
         };
 
-        const timer = setTimeout(() => {
-            enterMobileLandscapeFullscreen();
-        }, 150);
-
-        const handleFirstTouch = () => {
-            enterMobileLandscapeFullscreen();
-        };
-
-        window.addEventListener('touchstart', handleFirstTouch, { once: true });
-        window.addEventListener('click', handleFirstTouch, { once: true });
+        window.addEventListener('touchstart', handleUserGesture, { capture: true, once: true });
+        window.addEventListener('touchend', handleUserGesture, { capture: true, once: true });
+        window.addEventListener('click', handleUserGesture, { capture: true, once: true });
 
         return () => {
-            clearTimeout(timer);
-            window.removeEventListener('touchstart', handleFirstTouch);
-            window.removeEventListener('click', handleFirstTouch);
+            window.removeEventListener('touchstart', handleUserGesture, { capture: true });
+            window.removeEventListener('touchend', handleUserGesture, { capture: true });
+            window.removeEventListener('click', handleUserGesture, { capture: true });
             if (screen.orientation && 'unlock' in screen.orientation) {
                 try {
                     screen.orientation.unlock();
                 } catch (e) {}
             }
         };
-    }, []);
+    }, [triggerMobileLandscapeFullscreen]);
 
     useEffect(() => {
         const isTyping = () => {
@@ -2257,6 +2286,17 @@ const VideoPlayer: React.FC<{
                     </div>
                 )}
 
+                {/* Botón Flotante para Forzar Pantalla Completa Horizontal en Móvil */}
+                {mobileFullscreenPrompt && !isPiPActive && (
+                    <button
+                        type="button"
+                        onClick={triggerMobileLandscapeFullscreen}
+                        className="absolute top-20 right-4 bg-red-600 hover:bg-red-500 text-white px-4 py-2 rounded-xl font-bold text-xs shadow-[0_0_20px_rgba(220,38,38,0.6)] border border-white/20 z-[170] flex items-center gap-2 animate-pulse"
+                    >
+                        <span>📱 Tocar para Pantalla Completa</span>
+                    </button>
+                )}
+
 
                 {/* Botón Omitir Intro / Segmentos */}
                 {showSkipButton && activeSkipSegment && !isPiPActive && (
@@ -2904,7 +2944,9 @@ const VideoPlayer: React.FC<{
                                             </div>
                                         </div>
                                         <div className="flex flex-col justify-center min-w-0 flex-grow">
-                                            <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">Capítulo {idx + 1}</span>
+                                            <span className="text-[10px] font-bold text-red-500 uppercase tracking-widest">
+                                                T{ep.seasonNumber || 1} • E{ep.episodeNumber || (idx + 1)}
+                                            </span>
                                             <h4 className="text-sm font-bold text-white truncate">{ep.title}</h4>
                                             <div className="flex items-center justify-between">
                                                 <div className="flex items-center gap-2">
@@ -3009,24 +3051,91 @@ const VideoPlayer: React.FC<{
                                     )}
                                 </div>
                                 
-                                {(cast.length > 0 ? cast : getPlaceholderCast(item.title, item.type)).map((actor) => (
-                                    <div key={actor.id} className="flex items-center gap-3 bg-white/5 hover:bg-white/10 p-2.5 rounded-lg border border-transparent hover:border-white/5 transition-all">
-                                        {actor.avatar ? (
-                                            <img src={actor.avatar} alt={actor.name} className="w-10 h-10 rounded-full object-cover bg-gray-800 border border-white/10 shrink-0" referrerPolicy="no-referrer" />
-                                        ) : (
-                                            <div className="w-10 h-10 rounded-full bg-red-700/20 border border-red-600/30 flex items-center justify-center text-red-500 font-black shrink-0 text-sm">
-                                                {actor.name.charAt(0).toUpperCase()}
+                                {(cast.length > 0 ? cast : getPlaceholderCast(item.title, item.type)).map((actor) => {
+                                    const rawUrl = actor.socialUrl || (actor as any).socialLink || (actor as any).link;
+                                    const link = rawUrl ? (rawUrl.startsWith('http://') || rawUrl.startsWith('https://') ? rawUrl : `https://${rawUrl}`) : null;
+
+                                    const getPlatformBadge = (url: string) => {
+                                        const u = url.toLowerCase();
+                                        if (u.includes('youtube.com') || u.includes('youtu.be')) return { name: 'YouTube', color: 'text-red-500 bg-red-500/10 border-red-500/30' };
+                                        if (u.includes('instagram.com')) return { name: 'Instagram', color: 'text-pink-400 bg-pink-500/10 border-pink-500/30' };
+                                        if (u.includes('twitter.com') || u.includes('x.com')) return { name: 'X / Twitter', color: 'text-sky-400 bg-sky-500/10 border-sky-500/30' };
+                                        if (u.includes('tiktok.com')) return { name: 'TikTok', color: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/30' };
+                                        if (u.includes('discord')) return { name: 'Discord', color: 'text-indigo-400 bg-indigo-500/10 border-indigo-500/30' };
+                                        if (u.includes('twitch.tv')) return { name: 'Twitch', color: 'text-purple-400 bg-purple-500/10 border-purple-500/30' };
+                                        if (u.includes('facebook.com')) return { name: 'Facebook', color: 'text-blue-500 bg-blue-500/10 border-blue-500/30' };
+                                        return { name: 'Enlace', color: 'text-gray-300 bg-white/10 border-white/20' };
+                                    };
+
+                                    const badge = link ? getPlatformBadge(link) : null;
+
+                                    return (
+                                        <div key={actor.id} className="flex items-center gap-3 bg-white/5 hover:bg-white/10 p-2.5 rounded-xl border border-transparent hover:border-white/10 transition-all group">
+                                            {link ? (
+                                                <a 
+                                                    href={link} 
+                                                    target="_blank" 
+                                                    rel="noopener noreferrer" 
+                                                    className="relative shrink-0 group/avatar transition-transform active:scale-95 cursor-pointer" 
+                                                    title={`Ir a la red social de ${actor.name}`}
+                                                >
+                                                    {actor.avatar ? (
+                                                        <img src={actor.avatar} alt={actor.name} className="w-10 h-10 rounded-full object-cover bg-gray-800 border border-white/10 group-hover/avatar:border-red-500 transition-colors" referrerPolicy="no-referrer" />
+                                                    ) : (
+                                                        <div className="w-10 h-10 rounded-full bg-red-700/20 border border-red-600/30 flex items-center justify-center text-red-500 font-black text-sm group-hover/avatar:border-red-500 transition-colors">
+                                                            {actor.name.charAt(0).toUpperCase()}
+                                                        </div>
+                                                    )}
+                                                </a>
+                                            ) : (
+                                                actor.avatar ? (
+                                                    <img src={actor.avatar} alt={actor.name} className="w-10 h-10 rounded-full object-cover bg-gray-800 border border-white/10 shrink-0" referrerPolicy="no-referrer" />
+                                                ) : (
+                                                    <div className="w-10 h-10 rounded-full bg-red-700/20 border border-red-600/30 flex items-center justify-center text-red-500 font-black shrink-0 text-sm">
+                                                        {actor.name.charAt(0).toUpperCase()}
+                                                    </div>
+                                                )
+                                            )}
+
+                                            <div className="min-w-0 flex-grow">
+                                                {link ? (
+                                                    <a
+                                                        href={link}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="text-white hover:text-red-400 text-xs font-black truncate flex items-center gap-1.5 transition-colors hover:underline group-hover:text-red-400 cursor-pointer"
+                                                        title={`Abrir red social de ${actor.name}`}
+                                                    >
+                                                        <span>{actor.name}</span>
+                                                        <svg className="w-3 h-3 text-red-500 shrink-0 opacity-80 group-hover:opacity-100 transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 6H5.25A2.25 2.25 0 003 8.25v10.5A2.25 2.25 0 005.25 21h10.5A2.25 2.25 0 0018 18.75V10.5m-10.5 6L21 3m0 0h-5.25M21 3v5.25" />
+                                                        </svg>
+                                                    </a>
+                                                ) : (
+                                                    <h5 className="text-white text-xs font-black truncate">{actor.name}</h5>
+                                                )}
+
+                                                <p className="text-[10px] text-gray-400 truncate font-semibold">
+                                                    {actor.role}
+                                                    {actor.character && <span className="text-red-500 font-bold"> · {actor.character}</span>}
+                                                </p>
                                             </div>
-                                        )}
-                                        <div className="min-w-0 flex-grow">
-                                            <h5 className="text-white text-xs font-black truncate">{actor.name}</h5>
-                                            <p className="text-[10px] text-gray-400 truncate font-semibold">
-                                                {actor.role}
-                                                {actor.character && <span className="text-red-500 font-bold"> · {actor.character}</span>}
-                                            </p>
+
+                                            {link && badge && (
+                                                <a
+                                                    href={link}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    className={`text-[9px] px-2 py-1 rounded-lg font-bold border transition-all shrink-0 flex items-center gap-1 ${badge.color} hover:brightness-125 hover:scale-105 active:scale-95 cursor-pointer`}
+                                                    title={`Visitar ${badge.name} de ${actor.name}`}
+                                                >
+                                                    <span>🌐</span>
+                                                    <span className="hidden sm:inline">{badge.name}</span>
+                                                </a>
+                                            )}
                                         </div>
-                                    </div>
-                                ))}
+                                    );
+                                })}
                             </div>
                         )}
                     </div>
