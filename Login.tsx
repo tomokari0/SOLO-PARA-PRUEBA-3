@@ -15,7 +15,6 @@ const Login: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
     const [password, setPassword] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
-    const [termsChecked, setTermsChecked] = useState(false);
 
     const handleGoogleLogin = async () => {
         setLoading(true);
@@ -35,12 +34,6 @@ const Login: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
         e.preventDefault();
         setLoading(true);
         setError(null);
-        
-        if (isRegistering && !termsChecked) {
-            setError("Debes marcar la casilla de verificación 'Acepto los Términos de Uso' para registrarte.");
-            setLoading(false);
-            return;
-        }
 
         try {
             if (isRegistering) {
@@ -106,21 +99,6 @@ const Login: React.FC<{ onClose?: () => void }> = ({ onClose }) => {
                             required
                         />
                     </div>
-
-                    {isRegistering && (
-                        <div className="flex items-start gap-2.5 my-4">
-                            <input 
-                                type="checkbox" 
-                                id="login-terms-checkbox"
-                                checked={termsChecked} 
-                                onChange={(e) => setTermsChecked(e.target.checked)}
-                                className="mt-0.5 w-4 h-4 rounded border-white/20 bg-transparent text-red-600 focus:ring-0 focus:ring-offset-0 cursor-pointer accent-red-600"
-                            />
-                            <label htmlFor="login-terms-checkbox" className="text-xs text-gray-400 select-none cursor-pointer leading-tight">
-                                Acepto los <span className="text-red-500 font-bold underline">Términos de Uso</span> de SeikoYT (incluye análisis de videos por IA mediante Gemini Vision).
-                            </label>
-                        </div>
-                    )}
 
                     <button 
                         type="submit"

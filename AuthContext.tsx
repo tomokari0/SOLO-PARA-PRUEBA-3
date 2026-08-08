@@ -54,15 +54,41 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             if (docSnap.exists()) {
                 const data = docSnap.data();
                 setProfile({ id: docSnap.id, ...data } as UserProfile);
-                if (data.termsAccepted === true) {
-                    setNeedsTermsAcceptance(false);
-                } else {
-                    setNeedsTermsAcceptance(true);
-                }
+                setNeedsTermsAcceptance(false);
                 setLoading(false);
             } else {
-                setProfile(null);
-                setNeedsTermsAcceptance(true);
+                // Auto create profile on first login without blocking terms requirement
+                const defaultUsername = user.email ? user.email.split('@')[0] : 'usuario';
+                const defaultDisplay = user.displayName || defaultUsername;
+                const defaultAvatar = user.photoURL || 'https://upload.wikimedia.org/wikipedia/commons/0/0b/Netflix-avatar.png';
+                const isAdminUser = user.email === 'tomokari07@gmail.com';
+
+                const newProfile = {
+                    id: user.uid,
+                    uid: user.uid,
+                    username: defaultUsername,
+                    displayName: defaultDisplay,
+                    name: defaultDisplay,
+                    avatar: defaultAvatar,
+                    photoURL: defaultAvatar,
+                    bannerURL: '',
+                    bio: '',
+                    accentColor: '#ef4444',
+                    role: isAdminUser ? 'admin' : 'user',
+                    email: user.email || '',
+                    socialLinks: { youtube: '', discord: '', twitter: '', instagram: '', tiktok: '' },
+                    preferences: { audioLang: 'es-LAT', subtitlesLang: 'es' },
+                    watchlist: [],
+                    createdAt: serverTimestamp(),
+                    termsAccepted: true,
+                    termsAcceptedAt: serverTimestamp()
+                };
+                try {
+                    await setDoc(profileRef, newProfile);
+                } catch (e) {
+                    console.error("Error auto-creating profile:", e);
+                }
+                setNeedsTermsAcceptance(false);
                 setLoading(false);
             }
         }, (error) => {

@@ -3916,10 +3916,6 @@ const MainApp: React.FC = () => {
         );
     }
 
-    if (needsTermsAcceptance) {
-        return <TermsModal />;
-    }
-
     if (!currentProfile) {
         return <Login />;
     }
